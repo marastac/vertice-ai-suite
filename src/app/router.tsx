@@ -1,0 +1,40 @@
+import { createBrowserRouter, Navigate } from 'react-router-dom'
+import { AppShell } from './layout/AppShell'
+import { DashboardPage } from '@/features/dashboard/DashboardPage'
+import { LeadsPage } from '@/features/leads/LeadsPage'
+import { LeadDetailPage } from '@/features/leads/LeadDetailPage'
+import { FormsPage } from '@/features/forms/FormsPage'
+import { FormBuilderPage } from '@/features/forms/FormBuilderPage'
+import { FormSubmissionsPage } from '@/features/forms/FormSubmissionsPage'
+import { PublicFormPage } from '@/features/public-form/PublicFormPage'
+import { ChatSettingsPage } from '@/features/chat-settings/ChatSettingsPage'
+import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
+import { TeamPage } from '@/features/team/TeamPage'
+import { SettingsPage } from '@/features/settings/SettingsPage'
+import { NotFoundPage } from '@/features/not-found/NotFoundPage'
+
+export const router = createBrowserRouter([
+  {
+    path: '/f/:formId',
+    element: <PublicFormPage />,
+  },
+  {
+    path: '/',
+    element: <AppShell />,
+    children: [
+      { index: true, element: <Navigate to="/dashboard" replace /> },
+      { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'leads', element: <LeadsPage /> },
+      { path: 'leads/:leadId', element: <LeadDetailPage /> },
+      { path: 'forms', element: <FormsPage /> },
+      { path: 'forms/new', element: <FormBuilderPage /> },
+      { path: 'forms/:formId/edit', element: <FormBuilderPage /> },
+      { path: 'forms/:formId/submissions', element: <FormSubmissionsPage /> },
+      { path: 'chat-settings', element: <ChatSettingsPage /> },
+      { path: 'integrations', element: <IntegrationsPage /> },
+      { path: 'team', element: <TeamPage /> },
+      { path: 'settings', element: <SettingsPage /> },
+      { path: '*', element: <NotFoundPage /> },
+    ],
+  },
+])

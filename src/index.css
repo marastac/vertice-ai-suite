@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --color-vertice-bg: #05070f;
+  --color-vertice-surface: #0d1120;
+  --color-vertice-border: #1b2033;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-vertice-bg font-sans text-slate-100 antialiased;
+  }
+
+  ::selection {
+    @apply bg-blue-500/30 text-white;
+  }
+}

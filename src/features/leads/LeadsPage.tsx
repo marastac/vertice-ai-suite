@@ -5,7 +5,7 @@ import { Card } from '@/shared/ui/Card'
 import { Button } from '@/shared/ui/Button'
 import { EmptyState } from '@/shared/ui/EmptyState'
 import { Modal } from '@/shared/ui/Modal'
-import { mockTeamMembers } from '@/entities/team-member'
+import { useTeamMembersQuery } from '@/entities/team-member'
 import { useCreateLeadMutation, useLeadsQuery } from '@/entities/lead'
 import type { LeadFormValues } from '@/entities/lead'
 import { LeadFiltersBar } from './components/LeadFiltersBar'
@@ -16,6 +16,7 @@ import { LeadForm } from './components/LeadForm'
 
 export function LeadsPage() {
   const { data: leads, isLoading, isError, refetch } = useLeadsQuery()
+  const { data: teamMembers = [] } = useTeamMembersQuery()
   const createMutation = useCreateLeadMutation()
   const [filters, setFilters] = useState<LeadFilters>(defaultLeadFilters)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
@@ -75,7 +76,7 @@ export function LeadsPage() {
         }
       />
 
-      <LeadFiltersBar filters={filters} onChange={setFilters} teamMembers={mockTeamMembers} />
+      <LeadFiltersBar filters={filters} onChange={setFilters} teamMembers={teamMembers} />
 
       {isLoading && (
         <Card className="flex flex-col gap-3 p-5">
@@ -123,7 +124,7 @@ export function LeadsPage() {
       )}
 
       {!isLoading && !isError && filteredLeads.length > 0 && (
-        <LeadsTable leads={filteredLeads} teamMembers={mockTeamMembers} />
+        <LeadsTable leads={filteredLeads} teamMembers={teamMembers} />
       )}
 
       <Modal
@@ -134,7 +135,7 @@ export function LeadsPage() {
       >
         <LeadForm
           mode="create"
-          teamMembers={mockTeamMembers}
+          teamMembers={teamMembers}
           onSubmit={handleCreate}
           onCancel={() => setIsCreateOpen(false)}
           isSubmitting={createMutation.isPending}

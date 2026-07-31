@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { localStorageLeadRepository } from './lead-repository'
+import { activeLeadRepository } from './active-lead-repository'
 import type { CreateLeadInput, UpdateLeadInput } from './lead-repository'
 
 export const leadKeys = {
@@ -10,14 +10,14 @@ export const leadKeys = {
 export function useLeadsQuery() {
   return useQuery({
     queryKey: leadKeys.list(),
-    queryFn: () => localStorageLeadRepository.list(),
+    queryFn: () => activeLeadRepository.list(),
   })
 }
 
 export function useLeadQuery(id: string | undefined) {
   return useQuery({
     queryKey: leadKeys.list(),
-    queryFn: () => localStorageLeadRepository.list(),
+    queryFn: () => activeLeadRepository.list(),
     enabled: Boolean(id),
     select: (leads) => leads.find((lead) => lead.id === id),
   })
@@ -26,7 +26,7 @@ export function useLeadQuery(id: string | undefined) {
 export function useCreateLeadMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: CreateLeadInput) => localStorageLeadRepository.create(input),
+    mutationFn: (input: CreateLeadInput) => activeLeadRepository.create(input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: leadKeys.list() }),
   })
 }
@@ -35,7 +35,7 @@ export function useUpdateLeadMutation() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateLeadInput }) =>
-      localStorageLeadRepository.update(id, patch),
+      activeLeadRepository.update(id, patch),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: leadKeys.list() }),
   })
 }
@@ -43,7 +43,7 @@ export function useUpdateLeadMutation() {
 export function useDeleteLeadMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => localStorageLeadRepository.remove(id),
+    mutationFn: (id: string) => activeLeadRepository.remove(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: leadKeys.list() }),
   })
 }

@@ -1,7 +1,7 @@
-import { localStorageLeadRepository } from '@/entities/lead'
-import { localStorageFormRepository } from './form-repository'
+import { activeLeadRepository } from '@/entities/lead'
+import { activeFormRepository } from './active-form-repository'
+import { activeSubmissionRepository } from './active-submission-repository'
 import { computeSubmissionScore, scoreToLeadStatus } from './scoring'
-import { localStorageSubmissionRepository } from './submission-repository'
 import type { FormQuestion, FormSubmission, FormSubmissionAnswer } from './types'
 
 function findAnswerValue(
@@ -40,7 +40,7 @@ export async function submitQualificationForm(
   formId: string,
   answers: FormSubmissionAnswer[],
 ): Promise<SubmitQualificationFormResult> {
-  const form = await localStorageFormRepository.get(formId)
+  const form = await activeFormRepository.get(formId)
   if (!form) {
     throw new Error('Formulario no encontrado.')
   }
@@ -53,7 +53,7 @@ export async function submitQualificationForm(
   const status = scoreToLeadStatus(score)
   const { name, email, phone, company } = mapAnswersToLeadFields(form.questions, answers)
 
-  const lead = await localStorageLeadRepository.create({
+  const lead = await activeLeadRepository.create({
     name,
     email,
     phone,
@@ -66,7 +66,7 @@ export async function submitQualificationForm(
     submissionId,
   })
 
-  const submission = await localStorageSubmissionRepository.create({
+  const submission = await activeSubmissionRepository.create({
     id: submissionId,
     formId: form.id,
     answers,

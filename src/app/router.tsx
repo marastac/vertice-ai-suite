@@ -7,7 +7,9 @@ import { FormsPage } from '@/features/forms/FormsPage'
 import { FormBuilderPage } from '@/features/forms/FormBuilderPage'
 import { FormSubmissionsPage } from '@/features/forms/FormSubmissionsPage'
 import { PublicFormPage } from '@/features/public-form/PublicFormPage'
+import { PublicChatPage } from '@/features/public-chat/PublicChatPage'
 import { ChatSettingsPage } from '@/features/chat-settings/ChatSettingsPage'
+import { ConversationsPage } from '@/features/conversations/ConversationsPage'
 import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
 import { TeamPage } from '@/features/team/TeamPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
@@ -17,6 +19,10 @@ export const router = createBrowserRouter([
   {
     path: '/f/:formId',
     element: <PublicFormPage />,
+  },
+  {
+    path: '/c/:orgSlug',
+    element: <PublicChatPage />,
   },
   {
     path: '/',
@@ -30,6 +36,7 @@ export const router = createBrowserRouter([
       { path: 'forms/new', element: <FormBuilderPage /> },
       { path: 'forms/:formId/edit', element: <FormBuilderPage /> },
       { path: 'forms/:formId/submissions', element: <FormSubmissionsPage /> },
+      { path: 'conversations', element: <ConversationsPage /> },
       { path: 'chat-settings', element: <ChatSettingsPage /> },
       { path: 'integrations', element: <IntegrationsPage /> },
       { path: 'team', element: <TeamPage /> },

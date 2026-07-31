@@ -1,4 +1,13 @@
-import { ClipboardList, LayoutDashboard, MessageSquareText, Plug, Settings, Users, UsersRound } from 'lucide-react'
+import {
+  ClipboardList,
+  LayoutDashboard,
+  MessageSquareText,
+  MessagesSquare,
+  Plug,
+  Settings,
+  Users,
+  UsersRound,
+} from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -11,6 +20,7 @@ export const navItems: NavItem[] = [
   { label: 'Panel', to: '/dashboard', icon: LayoutDashboard },
   { label: 'Leads', to: '/leads', icon: Users },
   { label: 'Formularios', to: '/forms', icon: ClipboardList },
+  { label: 'Conversaciones', to: '/conversations', icon: MessagesSquare },
   { label: 'Configuración del chat', to: '/chat-settings', icon: MessageSquareText },
   { label: 'Integraciones', to: '/integrations', icon: Plug },
   { label: 'Equipo', to: '/team', icon: UsersRound },

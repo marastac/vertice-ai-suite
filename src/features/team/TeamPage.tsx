@@ -3,7 +3,7 @@ import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card } from '@/shared/ui/Card'
 import { Badge } from '@/shared/ui/Badge'
 import { Button } from '@/shared/ui/Button'
-import { mockTeamMembers, teamMemberRoleBadgeVariant, teamMemberRoleLabel } from '@/entities/team-member'
+import { teamMemberRoleBadgeVariant, teamMemberRoleLabel, useTeamMembersQuery } from '@/entities/team-member'
 
 function initials(name: string) {
   return name
@@ -15,6 +15,8 @@ function initials(name: string) {
 }
 
 export function TeamPage() {
+  const { data: teamMembers = [] } = useTeamMembersQuery()
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -24,7 +26,7 @@ export function TeamPage() {
       />
 
       <Card className="divide-y divide-slate-800/70">
-        {mockTeamMembers.map((member) => (
+        {teamMembers.map((member) => (
           <div key={member.id} className="flex items-center justify-between gap-4 px-5 py-4">
             <div className="flex items-center gap-3">
               <span className="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-sm font-semibold text-white">

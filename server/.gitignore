@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+*.local
+
+# Local chat-session persistence (contains conversation transcripts / PII —
+# never commit this). See CLAUDE.md "Backend (server/)".
+data/

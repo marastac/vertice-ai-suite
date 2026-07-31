@@ -1,21 +1,31 @@
 import { mockTeamMembers } from '@/entities/team-member'
 import { readJSON, writeJSON } from '@/shared/lib/local-storage'
+import { buildCreateActivityMessage, buildUpdateActivityMessages } from './lead-activity'
 import { mockLeads } from './mock-data'
-import { leadStatusLabel } from './presentation'
 import type { LeadFormValues } from './schema'
 import type { Lead, LeadActivityEntry } from './types'
 
 const STORAGE_KEY = 'lead-ai:leads:v1'
 
-export type CreateLeadInput = LeadFormValues & { formId?: string; submissionId?: string }
+export type CreateLeadInput = LeadFormValues & { formId?: string; submissionId?: string; chatSessionId?: string }
 export type UpdateLeadInput = Partial<LeadFormValues>
 
 export interface LeadRepository {
   list(): Promise<Lead[]>
   get(id: string): Promise<Lead | undefined>
+  getByChatSessionId(sessionId: string): Promise<Lead | undefined>
   create(input: CreateLeadInput): Promise<Lead>
   update(id: string, patch: UpdateLeadInput): Promise<Lead>
   remove(id: string): Promise<void>
+  /**
+   * Create-or-update a lead by chatSessionId in one call, used by
+   * qualification-service.ts. Exists as its own interface method (rather
+   * than qualification-service.ts doing list-then-write itself) so the
+   * Supabase implementation can make the create-or-update decision atomic
+   * via a real upsert — a list-then-write pattern was only ever safe when
+   * each browser had an isolated localStorage store.
+   */
+  upsertByChatSession(sessionId: string, input: CreateLeadInput): Promise<Lead>
 }
 
 function readLeads(): Lead[] {
@@ -34,37 +44,6 @@ function assignedToName(id: string | undefined): string | undefined {
   return mockTeamMembers.find((member) => member.id === id)?.name
 }
 
-function buildUpdateActivity(existing: Lead, patch: UpdateLeadInput, now: string): LeadActivityEntry[] {
-  const entries: LeadActivityEntry[] = []
-
-  if (patch.status && patch.status !== existing.status) {
-    entries.push({
-      id: crypto.randomUUID(),
-      message: `Estado actualizado a "${leadStatusLabel[patch.status]}".`,
-      createdAt: now,
-    })
-  }
-
-  if ('assignedTo' in patch && patch.assignedTo !== existing.assignedTo) {
-    const name = assignedToName(patch.assignedTo)
-    entries.push({
-      id: crypto.randomUUID(),
-      message: name ? `Lead asignado a ${name}.` : 'Se ha quitado la persona asignada.',
-      createdAt: now,
-    })
-  }
-
-  const contactFieldsChanged = (
-    ['name', 'email', 'phone', 'company', 'position', 'source', 'estimatedBudget', 'notes', 'score'] as const
-  ).some((field) => field in patch && patch[field] !== existing[field])
-
-  if (contactFieldsChanged) {
-    entries.push({ id: crypto.randomUUID(), message: 'Información del lead actualizada.', createdAt: now })
-  }
-
-  return entries
-}
-
 export const localStorageLeadRepository: LeadRepository = {
   async list() {
     return readLeads()
@@ -72,6 +51,10 @@ export const localStorageLeadRepository: LeadRepository = {
 
   async get(id) {
     return readLeads().find((lead) => lead.id === id)
+  },
+
+  async getByChatSessionId(sessionId) {
+    return readLeads().find((lead) => lead.chatSessionId === sessionId)
   },
 
   async create(input) {
@@ -95,12 +78,13 @@ export const localStorageLeadRepository: LeadRepository = {
       activity: [
         {
           id: crypto.randomUUID(),
-          message: input.formId ? 'Lead creado automáticamente desde un formulario.' : 'Lead creado manualmente por el equipo.',
+          message: buildCreateActivityMessage(input),
           createdAt: now,
         },
       ],
       formId: input.formId,
       submissionId: input.submissionId,
+      chatSessionId: input.chatSessionId,
     }
     writeLeads([lead, ...leads])
     return lead
@@ -115,7 +99,9 @@ export const localStorageLeadRepository: LeadRepository = {
 
     const existing = leads[index]
     const now = new Date().toISOString()
-    const newActivity = buildUpdateActivity(existing, patch, now)
+    const newActivity: LeadActivityEntry[] = buildUpdateActivityMessages(existing, patch, assignedToName).map(
+      (message) => ({ id: crypto.randomUUID(), message, createdAt: now }),
+    )
     const updated: Lead = {
       ...existing,
       ...patch,
@@ -130,5 +116,13 @@ export const localStorageLeadRepository: LeadRepository = {
   async remove(id) {
     const leads = readLeads()
     writeLeads(leads.filter((lead) => lead.id !== id))
+  },
+
+  async upsertByChatSession(sessionId, input) {
+    const existing = readLeads().find((lead) => lead.chatSessionId === sessionId)
+    if (existing) {
+      return localStorageLeadRepository.update(existing.id, input)
+    }
+    return localStorageLeadRepository.create({ ...input, chatSessionId: sessionId })
   },
 }

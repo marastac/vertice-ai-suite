@@ -24,4 +24,5 @@ export interface Lead {
   activity: LeadActivityEntry[]
   formId?: string
   submissionId?: string
+  chatSessionId?: string
 }

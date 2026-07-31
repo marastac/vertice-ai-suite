@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Briefcase, Building2, Calendar, Mail, MessagesSquare, Pencil, Phone, Trash2, Wallet } from 'lucide-react'
+import { ArrowLeft, Briefcase, Building2, Calendar, Mail, Pencil, Phone, Trash2, Wallet } from 'lucide-react'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/Card'
 import { EmptyState } from '@/shared/ui/EmptyState'
@@ -9,7 +9,7 @@ import { Select } from '@/shared/ui/Select'
 import { Button } from '@/shared/ui/Button'
 import { Modal } from '@/shared/ui/Modal'
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog'
-import { mockTeamMembers } from '@/entities/team-member'
+import { useTeamMembersQuery } from '@/entities/team-member'
 import {
   LEAD_STATUSES,
   formatLeadBudget,
@@ -23,11 +23,14 @@ import {
 } from '@/entities/lead'
 import type { LeadFormValues, LeadStatus } from '@/entities/lead'
 import { LeadForm } from './components/LeadForm'
+import { LeadTranscriptCard } from './components/LeadTranscriptCard'
+import { LeadQualificationCard } from './components/LeadQualificationCard'
 
 export function LeadDetailPage() {
   const { leadId } = useParams<{ leadId: string }>()
   const navigate = useNavigate()
   const { data: lead, isLoading, isError, refetch } = useLeadQuery(leadId)
+  const { data: teamMembers = [] } = useTeamMembersQuery()
   const updateMutation = useUpdateLeadMutation()
   const deleteMutation = useDeleteLeadMutation()
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -71,7 +74,7 @@ export function LeadDetailPage() {
     )
   }
 
-  const assignedMember = mockTeamMembers.find((member) => member.id === lead.assignedTo)
+  const assignedMember = teamMembers.find((member) => member.id === lead.assignedTo)
 
   const editDefaultValues: Partial<LeadFormValues> = {
     name: lead.name,
@@ -144,18 +147,7 @@ export function LeadDetailPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="flex flex-col gap-6 lg:col-span-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>Conversación</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <EmptyState
-                icon={<MessagesSquare className="size-5" />}
-                title="Sin conversación todavía"
-                description="Cuando la calificación por chat con IA esté activa, aquí aparecerá la transcripción completa."
-              />
-            </CardContent>
-          </Card>
+          <LeadTranscriptCard chatSessionId={lead.chatSessionId} />
 
           <Card>
             <CardHeader>
@@ -178,6 +170,8 @@ export function LeadDetailPage() {
         </div>
 
         <div className="flex flex-col gap-6">
+          {lead.chatSessionId && <LeadQualificationCard chatSessionId={lead.chatSessionId} />}
+
           <Card>
             <CardHeader>
               <CardTitle>Detalles de contacto</CardTitle>
@@ -259,6 +253,14 @@ export function LeadDetailPage() {
                   </Link>
                 </div>
               )}
+              {lead.chatSessionId && (
+                <div className="flex items-center justify-between gap-2 border-t border-slate-800 pt-3">
+                  <span className="text-slate-500">Conversación de origen</span>
+                  <Link to="/conversations" className="font-medium text-blue-400 hover:text-blue-300">
+                    Ver conversaciones
+                  </Link>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -282,7 +284,7 @@ export function LeadDetailPage() {
         <LeadForm
           mode="edit"
           defaultValues={editDefaultValues}
-          teamMembers={mockTeamMembers}
+          teamMembers={teamMembers}
           onSubmit={handleEditSubmit}
           onCancel={() => setIsEditOpen(false)}
           isSubmitting={updateMutation.isPending}

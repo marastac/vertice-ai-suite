@@ -1,3 +1,28 @@
+# Lead AI - Vértice AI Suite
+
+Lead AI is an AI-powered CRM designed for marketing agencies to capture, qualify, manage, and convert leads.
+
+## Features
+
+- 🤖 AI-powered lead qualification
+- 💬 Public AI chat widget
+- 📋 Lead management
+- 📊 Dashboard with KPIs
+- 📝 Forms management
+- 💾 Local or Supabase persistence
+- 🏢 Multi-organization architecture (in progress)
+- 🔐 Authentication (planned)
+
+## Tech Stack
+
+- React
+- TypeScript
+- Vite
+- Express
+- Supabase
+- PostgreSQL
+- Anthropic Claude API
+
 # Lead AI
 
 Lead AI is a SaaS product in the Vertice AI Suite that helps digital marketing agencies qualify leads via AI-assisted forms and chat.

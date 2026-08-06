@@ -11,7 +11,7 @@ Lead AI is an AI-powered CRM designed for marketing agencies to capture, qualify
 - 📝 Forms management
 - 💾 Local or Supabase persistence
 - 🏢 Multi-organization architecture (in progress)
-- 🔐 Authentication (planned)
+- 🔐 Authentication via Supabase Auth (login, registration, password recovery, protected dashboard routes)
 
 ## Tech Stack
 
@@ -57,6 +57,35 @@ CORS_ORIGIN=http://localhost:5173
 ```
 
 The app runs fine with `ANTHROPIC_API_KEY` left empty — the backend just reports `aiConfigured: false` and the public chat page shows a Spanish "not configured yet" message instead of crashing. The dashboard, leads, and forms features are unaffected either way.
+
+## Configure authentication (Supabase Auth)
+
+The dashboard (`/dashboard`, `/leads`, `/forms`, `/conversations`, etc.) requires a logged-in user. Authentication is handled entirely by [Supabase Auth](https://supabase.com/docs/guides/auth) — there's no separate auth server.
+
+1. Create a free Supabase project (or reuse the one from Phase 6's optional data persistence) at [supabase.com](https://supabase.com).
+2. Copy `.env.example` to `.env` at the repo root and fill in the Supabase values:
+
+   ```
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+
+   These are the same variables Phase 6 uses for optional data persistence (`VITE_DATA_BACKEND`) — auth works independently of that flag; you can keep `VITE_DATA_BACKEND=local` for leads/forms/chat data while still using Supabase for login.
+3. In the Supabase dashboard, go to **Authentication → Providers** and make sure **Email** is enabled (it is by default). No extra provider setup is required.
+4. In **Authentication → URL Configuration**, add `http://localhost:5173/reset-password` to the **Redirect URLs** list — this is where Supabase sends users after they click a "reset password" email link. Add your production URL's equivalent there too once you deploy.
+5. Restart `npm run dev` after editing `.env` (Vite only reads env vars at startup).
+
+If `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are left empty, the app still starts: every dashboard route redirects to `/login`, and the login/register/forgot-password pages show a Spanish "Supabase no está configurado" message instead of a broken form, the same fallback pattern used elsewhere in the app (see `aiConfigured` below).
+
+### Testing the authentication flow
+
+With `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` set and the dev server running:
+
+1. Go to `http://localhost:5173/register`, create an account. Depending on your Supabase project's email-confirmation setting, you'll either be signed in immediately or asked to confirm your email first (the UI handles both cases).
+2. Go to `http://localhost:5173/login` and sign in — you should land on `/dashboard`.
+3. Visiting any dashboard URL (`/leads`, `/forms`, …) while logged out redirects to `/login` and returns you to that same page after a successful sign-in.
+4. Click your name/avatar in the top-right corner of the dashboard to open the account menu, and use **Cerrar sesión** to log out — you're redirected to `/login`.
+5. From `/login`, click "¿Olvidaste tu contraseña?", submit your email, then open the reset link from your inbox — it lands on `/reset-password`, where you can set a new password.
 
 ## Running the app
 

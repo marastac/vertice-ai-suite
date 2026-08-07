@@ -1,6 +1,10 @@
+import { LOCAL_ORGANIZATION_ID } from '@/entities/organization'
 import type { Lead } from './types'
 
-export const mockLeads: Lead[] = [
+// Every mock lead below belongs to the single local pseudo-organization —
+// stamped on here rather than in each literal so this list stays a direct
+// mirror of supabase/seed.sql's leads INSERT.
+const mockLeadsWithoutOrg: Omit<Lead, 'organizationId'>[] = [
   {
     id: 'lead-01',
     name: 'Elena Márquez',
@@ -152,3 +156,5 @@ export const mockLeads: Lead[] = [
     activity: [{ id: 'lead-08-a1', message: 'Lead creado desde el chat de calificación.', createdAt: '2026-07-16T07:45:00Z' }],
   },
 ]
+
+export const mockLeads: Lead[] = mockLeadsWithoutOrg.map((lead) => ({ ...lead, organizationId: LOCAL_ORGANIZATION_ID }))

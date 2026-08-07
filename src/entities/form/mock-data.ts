@@ -1,6 +1,10 @@
+import { LOCAL_ORGANIZATION_ID } from '@/entities/organization'
 import type { QualificationForm } from './types'
 
-export const mockForms: QualificationForm[] = [
+// Every mock form below belongs to the single local pseudo-organization —
+// stamped on here rather than in each literal so this list stays a direct
+// mirror of supabase/seed.sql's forms INSERT.
+const mockFormsWithoutOrg: Omit<QualificationForm, 'organizationId'>[] = [
   {
     id: 'form-01',
     name: 'Formulario de descubrimiento para agencias',
@@ -121,3 +125,8 @@ export const mockForms: QualificationForm[] = [
     ],
   },
 ]
+
+export const mockForms: QualificationForm[] = mockFormsWithoutOrg.map((form) => ({
+  ...form,
+  organizationId: LOCAL_ORGANIZATION_ID,
+}))

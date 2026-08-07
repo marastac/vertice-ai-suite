@@ -15,18 +15,30 @@
 -- rows are NOT meant to match your real accumulated localStorage data —
 -- that's a separate, per-user export/import step (see
 -- src/entities/*/export-import.ts once implemented), not this file.
+--
+-- Phase 8: every row below belongs to one seeded "Vertice Agency"
+-- organization (fixed id below). This script cannot know your auth.users
+-- id, so it cannot make you a member of that organization automatically —
+-- see the very bottom of this file for the one statement you still need to
+-- run by hand after signing up, same as supabase/migrations-phase8.sql.
+
+-- ── organizations (seed org every other row below belongs to) ───────────
+insert into organizations (id, name, slug) values
+  ('00000000-0000-0000-0000-000000000000', 'Vertice Agency', 'vertice-agency')
+on conflict (id) do nothing;
 
 -- ── team_members (mirrors entities/team-member/mock-data.ts) ────────────
-insert into team_members (id, name, email, role) values
-  ('00000000-0000-0000-0000-000000000001', 'Alex Morgan', 'alex@verticeagency.com', 'owner'),
-  ('00000000-0000-0000-0000-000000000002', 'Jordan Lee', 'jordan@verticeagency.com', 'admin'),
-  ('00000000-0000-0000-0000-000000000003', 'Sam Rivera', 'sam@verticeagency.com', 'member')
+insert into team_members (id, organization_id, name, email, role) values
+  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'Alex Morgan', 'alex@verticeagency.com', 'owner'),
+  ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000000', 'Jordan Lee', 'jordan@verticeagency.com', 'admin'),
+  ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000', 'Sam Rivera', 'sam@verticeagency.com', 'member')
 on conflict (id) do nothing;
 
 -- ── forms (mirrors entities/form/mock-data.ts) ───────────────────────────
-insert into forms (id, name, description, status, questions, created_at, updated_at) values
+insert into forms (id, organization_id, name, description, status, questions, created_at, updated_at) values
 (
   '00000000-0000-0000-0000-000000000101',
+  '00000000-0000-0000-0000-000000000000',
   'Formulario de descubrimiento para agencias',
   'Califica agencias potenciales antes de la primera llamada de descubrimiento.',
   'active',
@@ -59,6 +71,7 @@ insert into forms (id, name, description, status, questions, created_at, updated
 ),
 (
   '00000000-0000-0000-0000-000000000102',
+  '00000000-0000-0000-0000-000000000000',
   'Calificador de encaje para ecommerce',
   'Evalúa si una tienda online encaja con nuestros servicios de marketing.',
   'active',
@@ -89,6 +102,7 @@ insert into forms (id, name, description, status, questions, created_at, updated
 ),
 (
   '00000000-0000-0000-0000-000000000103',
+  '00000000-0000-0000-0000-000000000000',
   'Filtro de presupuesto empresarial',
   'Filtra leads empresariales por presupuesto disponible antes de asignar un ejecutivo de cuentas.',
   'draft',
@@ -110,44 +124,46 @@ on conflict (id) do nothing;
 
 -- ── leads (mirrors entities/lead/mock-data.ts) ───────────────────────────
 insert into leads (
-  id, name, email, phone, company, "position", source, status, score,
+  id, organization_id, name, email, phone, company, "position", source, status, score,
   estimated_budget, assigned_to, notes, created_at, last_activity_at
 ) values
-  ('00000000-0000-0000-0000-000000000201', 'Elena Márquez', 'elena@brightpeakmarketing.com', '+34 611 203 344', 'Bright Peak Marketing', 'Directora de Marketing', 'chat', 'qualified', 88, 12000, '00000000-0000-0000-0000-000000000001', 'Interesada en un paquete de gestión de campañas para tres marcas.', '2026-07-10T09:15:00Z', '2026-07-16T14:02:00Z'),
-  ('00000000-0000-0000-0000-000000000202', 'Jaime Blanco', 'jaime@novaretail.io', '+34 622 447 921', 'Nova Retail Co.', 'Responsable de Ecommerce', 'form', 'qualifying', 61, 6000, '00000000-0000-0000-0000-000000000002', 'Solicita más información sobre integración con su tienda online.', '2026-07-12T11:40:00Z', '2026-07-16T10:22:00Z'),
-  ('00000000-0000-0000-0000-000000000203', 'Priya Nandakumar', 'priya@lumenhealth.com', null, 'Lumen Health Group', 'CEO', 'widget', 'new', 42, 20000, null, null, '2026-07-15T16:05:00Z', '2026-07-15T16:05:00Z'),
-  ('00000000-0000-0000-0000-000000000204', 'Marcos Delgado', 'marcos@forgeautomotive.com', '+34 633 668 810', 'Forge Automotive', 'Director Comercial', 'chat', 'converted', 95, 35000, '00000000-0000-0000-0000-000000000001', 'Cliente convertido tras la llamada de descubrimiento.', '2026-06-28T08:30:00Z', '2026-07-14T09:47:00Z'),
-  ('00000000-0000-0000-0000-000000000205', 'Sofía Trigo', 'sofia@driftwoodstudio.co', null, 'Driftwood Studio', 'Fundadora', 'form', 'disqualified', 18, 500, null, 'Presupuesto muy por debajo del mínimo del servicio.', '2026-07-08T13:12:00Z', '2026-07-09T17:00:00Z'),
-  ('00000000-0000-0000-0000-000000000206', 'Óscar Bermejo', 'oscar@keystonelegal.com', '+34 690 021 187', 'Keystone Legal Partners', 'Socio', 'manual', 'qualifying', 57, 9000, '00000000-0000-0000-0000-000000000003', 'Añadido manualmente tras una llamada telefónica.', '2026-07-13T10:00:00Z', '2026-07-16T08:11:00Z'),
-  ('00000000-0000-0000-0000-000000000207', 'Gracia Ocampo', 'gracia@summitfitness.com', null, 'Summit Fitness Collective', 'Directora de Operaciones', 'widget', 'qualified', 79, 15000, '00000000-0000-0000-0000-000000000002', 'Buscan lanzar campaña de captación para tres sedes nuevas.', '2026-07-11T15:20:00Z', '2026-07-15T12:35:00Z'),
-  ('00000000-0000-0000-0000-000000000208', 'Tomás Novak', 'tomas@brightpath.finance', '+34 633 356 620', 'BrightPath Finance', 'Director Financiero', 'chat', 'new', 33, 4000, null, null, '2026-07-16T07:45:00Z', '2026-07-16T07:45:00Z')
+  ('00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000000', 'Elena Márquez', 'elena@brightpeakmarketing.com', '+34 611 203 344', 'Bright Peak Marketing', 'Directora de Marketing', 'chat', 'qualified', 88, 12000, '00000000-0000-0000-0000-000000000001', 'Interesada en un paquete de gestión de campañas para tres marcas.', '2026-07-10T09:15:00Z', '2026-07-16T14:02:00Z'),
+  ('00000000-0000-0000-0000-000000000202', '00000000-0000-0000-0000-000000000000', 'Jaime Blanco', 'jaime@novaretail.io', '+34 622 447 921', 'Nova Retail Co.', 'Responsable de Ecommerce', 'form', 'qualifying', 61, 6000, '00000000-0000-0000-0000-000000000002', 'Solicita más información sobre integración con su tienda online.', '2026-07-12T11:40:00Z', '2026-07-16T10:22:00Z'),
+  ('00000000-0000-0000-0000-000000000203', '00000000-0000-0000-0000-000000000000', 'Priya Nandakumar', 'priya@lumenhealth.com', null, 'Lumen Health Group', 'CEO', 'widget', 'new', 42, 20000, null, null, '2026-07-15T16:05:00Z', '2026-07-15T16:05:00Z'),
+  ('00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000000', 'Marcos Delgado', 'marcos@forgeautomotive.com', '+34 633 668 810', 'Forge Automotive', 'Director Comercial', 'chat', 'converted', 95, 35000, '00000000-0000-0000-0000-000000000001', 'Cliente convertido tras la llamada de descubrimiento.', '2026-06-28T08:30:00Z', '2026-07-14T09:47:00Z'),
+  ('00000000-0000-0000-0000-000000000205', '00000000-0000-0000-0000-000000000000', 'Sofía Trigo', 'sofia@driftwoodstudio.co', null, 'Driftwood Studio', 'Fundadora', 'form', 'disqualified', 18, 500, null, 'Presupuesto muy por debajo del mínimo del servicio.', '2026-07-08T13:12:00Z', '2026-07-09T17:00:00Z'),
+  ('00000000-0000-0000-0000-000000000206', '00000000-0000-0000-0000-000000000000', 'Óscar Bermejo', 'oscar@keystonelegal.com', '+34 690 021 187', 'Keystone Legal Partners', 'Socio', 'manual', 'qualifying', 57, 9000, '00000000-0000-0000-0000-000000000003', 'Añadido manualmente tras una llamada telefónica.', '2026-07-13T10:00:00Z', '2026-07-16T08:11:00Z'),
+  ('00000000-0000-0000-0000-000000000207', '00000000-0000-0000-0000-000000000000', 'Gracia Ocampo', 'gracia@summitfitness.com', null, 'Summit Fitness Collective', 'Directora de Operaciones', 'widget', 'qualified', 79, 15000, '00000000-0000-0000-0000-000000000002', 'Buscan lanzar campaña de captación para tres sedes nuevas.', '2026-07-11T15:20:00Z', '2026-07-15T12:35:00Z'),
+  ('00000000-0000-0000-0000-000000000208', '00000000-0000-0000-0000-000000000000', 'Tomás Novak', 'tomas@brightpath.finance', '+34 633 356 620', 'BrightPath Finance', 'Director Financiero', 'chat', 'new', 33, 4000, null, null, '2026-07-16T07:45:00Z', '2026-07-16T07:45:00Z')
 on conflict (id) do nothing;
 
 -- ── lead_activity (mirrors each mock lead's embedded activity[]) ────────
-insert into lead_activity (lead_id, message, created_at) values
-  ('00000000-0000-0000-0000-000000000201', 'Lead creado desde el chat de calificación.', '2026-07-10T09:15:00Z'),
-  ('00000000-0000-0000-0000-000000000201', 'Conversación completada con el asistente de IA.', '2026-07-12T10:30:00Z'),
-  ('00000000-0000-0000-0000-000000000201', 'Estado actualizado a "Calificado".', '2026-07-16T14:02:00Z'),
+-- organization_id is denormalized from the parent lead — see schema.sql's
+-- note on why lead_activity carries its own copy instead of a join.
+insert into lead_activity (organization_id, lead_id, message, created_at) values
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000201', 'Lead creado desde el chat de calificación.', '2026-07-10T09:15:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000201', 'Conversación completada con el asistente de IA.', '2026-07-12T10:30:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000201', 'Estado actualizado a "Calificado".', '2026-07-16T14:02:00Z'),
 
-  ('00000000-0000-0000-0000-000000000202', 'Lead creado desde el formulario de calificación.', '2026-07-12T11:40:00Z'),
-  ('00000000-0000-0000-0000-000000000202', 'Información del lead actualizada.', '2026-07-16T10:22:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000202', 'Lead creado desde el formulario de calificación.', '2026-07-12T11:40:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000202', 'Información del lead actualizada.', '2026-07-16T10:22:00Z'),
 
-  ('00000000-0000-0000-0000-000000000203', 'Lead creado desde el widget embebido.', '2026-07-15T16:05:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000203', 'Lead creado desde el widget embebido.', '2026-07-15T16:05:00Z'),
 
-  ('00000000-0000-0000-0000-000000000204', 'Lead creado desde el chat de calificación.', '2026-06-28T08:30:00Z'),
-  ('00000000-0000-0000-0000-000000000204', 'Estado actualizado a "Calificado".', '2026-07-05T12:00:00Z'),
-  ('00000000-0000-0000-0000-000000000204', 'Estado actualizado a "Convertido".', '2026-07-14T09:47:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000204', 'Lead creado desde el chat de calificación.', '2026-06-28T08:30:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000204', 'Estado actualizado a "Calificado".', '2026-07-05T12:00:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000204', 'Estado actualizado a "Convertido".', '2026-07-14T09:47:00Z'),
 
-  ('00000000-0000-0000-0000-000000000205', 'Lead creado desde el formulario de calificación.', '2026-07-08T13:12:00Z'),
-  ('00000000-0000-0000-0000-000000000205', 'Estado actualizado a "Descalificado".', '2026-07-09T17:00:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000205', 'Lead creado desde el formulario de calificación.', '2026-07-08T13:12:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000205', 'Estado actualizado a "Descalificado".', '2026-07-09T17:00:00Z'),
 
-  ('00000000-0000-0000-0000-000000000206', 'Lead creado manualmente por el equipo.', '2026-07-13T10:00:00Z'),
-  ('00000000-0000-0000-0000-000000000206', 'Lead asignado a Sam Rivera.', '2026-07-16T08:11:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000206', 'Lead creado manualmente por el equipo.', '2026-07-13T10:00:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000206', 'Lead asignado a Sam Rivera.', '2026-07-16T08:11:00Z'),
 
-  ('00000000-0000-0000-0000-000000000207', 'Lead creado desde el widget embebido.', '2026-07-11T15:20:00Z'),
-  ('00000000-0000-0000-0000-000000000207', 'Estado actualizado a "Calificado".', '2026-07-15T12:35:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000207', 'Lead creado desde el widget embebido.', '2026-07-11T15:20:00Z'),
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000207', 'Estado actualizado a "Calificado".', '2026-07-15T12:35:00Z'),
 
-  ('00000000-0000-0000-0000-000000000208', 'Lead creado desde el chat de calificación.', '2026-07-16T07:45:00Z')
+  ('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000208', 'Lead creado desde el chat de calificación.', '2026-07-16T07:45:00Z')
 on conflict do nothing;
 
 -- ── chat_configuration default row (mirrors entities/chat/defaults.ts) ──
@@ -155,11 +171,11 @@ on conflict do nothing;
 -- below are fresh UUID literals (the original uses crypto.randomUUID() at
 -- runtime — any valid uuid is fine, nothing keys off these specific values).
 insert into chat_configuration (
-  org_slug, assistant_name, welcome_message, agency_description, services_offered,
+  organization_id, assistant_name, welcome_message, agency_description, services_offered,
   tone, language, questions_to_collect, criteria, min_qualified_score,
   additional_instructions, is_active
 ) values (
-  'vertice-agency',
+  '00000000-0000-0000-0000-000000000000',
   'Asistente de Vértice',
   '¡Hola! 👋 Soy el asistente virtual de la agencia. Cuéntame un poco sobre tu proyecto y te ayudo a ver si encajamos bien.',
   'Agencia de marketing digital especializada en captación y calificación de leads con inteligencia artificial.',
@@ -183,19 +199,33 @@ insert into chat_configuration (
   '',
   true
 )
-on conflict (org_slug) do nothing;
+on conflict (organization_id) do nothing;
+
+-- ── you still need to run this — nothing above can do it for you ────────
+-- This seed data belongs to the 'vertice-agency' organization seeded above,
+-- but nothing here can make YOUR account a member of it — sign up through
+-- the app first (POST /register), find your user id (Supabase dashboard →
+-- Authentication → Users → your account → "UID"), then run:
+--
+-- insert into organization_members (organization_id, user_id, role)
+-- values ('00000000-0000-0000-0000-000000000000', '<YOUR-AUTH-UID-HERE>', 'owner');
+--
+-- Without this, the app auto-provisions a separate, empty personal
+-- organization for you instead of connecting you to this seed data.
 
 -- ── verification ──────────────────────────────────────────────────────────
 -- Run this file's INSERTs above, then read the result set below directly in
 -- the SQL Editor's own results pane. This is the ground truth — trust this
 -- over Table Editor, which is a separate read path and can show a stale/
--- cached view. Expect: team_members=3, forms=3, leads=8, lead_activity=16,
--- chat_configuration=1. If any of these come back 0, the insert above it
--- did not commit — re-run this whole file and check the SQL Editor's error
--- output for that block specifically (a later failing statement in this
--- same script rolls back every earlier insert in the same run, including
--- ones that looked fine).
-select 'team_members' as table_name, count(*) from team_members
+-- cached view. Expect: organizations=1, team_members=3, forms=3, leads=8,
+-- lead_activity=16, chat_configuration=1. If any of these come back 0, the
+-- insert above it did not commit — re-run this whole file and check the SQL
+-- Editor's error output for that block specifically (a later failing
+-- statement in this same script rolls back every earlier insert in the same
+-- run, including ones that looked fine).
+select 'organizations' as table_name, count(*) from organizations
+union all
+select 'team_members', count(*) from team_members
 union all
 select 'forms', count(*) from forms
 union all

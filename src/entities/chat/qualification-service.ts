@@ -15,15 +15,24 @@ import type { ChatQualificationResult } from './types'
  * lookup below is a separate, best-effort read used only to compute
  * name/company fallbacks; it doesn't affect how many leads end up created.
  */
+/**
+ * organizationId is an explicit parameter, not read from "the current
+ * user's active organization" — the public chat page that calls this is
+ * anonymous (no login, no organization membership). PublicChatPage already
+ * resolved it once, at session bootstrap, via
+ * ChatConfigRepository.getBySlug() — see PublicChatPage.tsx.
+ */
 export async function syncLeadFromQualification(
+  organizationId: string,
   sessionId: string,
   qualification: ChatQualificationResult,
 ): Promise<string | undefined> {
   if (!qualification.email) return undefined
 
-  const existing = await activeLeadRepository.getByChatSessionId(sessionId)
+  const existing = await activeLeadRepository.getByChatSessionId(organizationId, sessionId)
 
   const patch = {
+    organizationId,
     name: qualification.contactName ?? existing?.name ?? 'Lead sin nombre',
     email: qualification.email,
     phone: qualification.phone ?? undefined,
@@ -34,7 +43,7 @@ export async function syncLeadFromQualification(
     notes: qualification.summary,
   }
 
-  const lead = await activeLeadRepository.upsertByChatSession(sessionId, patch)
+  const lead = await activeLeadRepository.upsertByChatSession(organizationId, sessionId, patch)
   await localStorageChatSessionRepository.linkLead(sessionId, lead.id)
   return lead.id
 }

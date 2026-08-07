@@ -1,7 +1,8 @@
 import type { ChatConfiguration } from './types'
 
-export function createDefaultChatConfiguration(): ChatConfiguration {
+export function createDefaultChatConfiguration(organizationId: string): ChatConfiguration {
   return {
+    organizationId,
     assistantName: 'Asistente de Vértice',
     welcomeMessage:
       '¡Hola! 👋 Soy el asistente virtual de la agencia. Cuéntame un poco sobre tu proyecto y te ayudo a ver si encajamos bien.',

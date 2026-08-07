@@ -33,21 +33,31 @@ export interface MigrationResult {
  * is still reading your real accumulated data), open the browser console
  * on any page of the running app and call:
  *
- *   await migrateLocalDataToSupabase()
+ *   await migrateLocalDataToSupabase('<your-organization-id>')
+ *
+ * organizationId (Phase 8) is a required argument, not resolved
+ * automatically — this file is a plain module, not a React component, so it
+ * has no access to the running app's OrganizationContext. Find your
+ * organization id by querying `select id from organizations` in the
+ * Supabase SQL editor (or from the one row you should see if you've already
+ * signed up and are the sole member so far).
  *
  * Safe to re-run: every insert is an upsert keyed on the original id.
  */
-export async function migrateLocalDataToSupabase(): Promise<MigrationResult> {
+export async function migrateLocalDataToSupabase(organizationId: string): Promise<MigrationResult> {
   if (!isSupabaseConfigured) {
     throw new Error(
       'Supabase no está configurado (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY). Revisa tu .env antes de migrar.',
     )
   }
+  if (!organizationId) {
+    throw new Error('migrateLocalDataToSupabase(organizationId) requiere el id de la organización destino.')
+  }
 
   const [forms, leads, submissions] = await Promise.all([
-    localStorageFormRepository.list(),
-    localStorageLeadRepository.list(),
-    localStorageSubmissionRepository.listAll(),
+    localStorageFormRepository.list(organizationId),
+    localStorageLeadRepository.list(organizationId),
+    localStorageSubmissionRepository.listAll(organizationId),
   ])
 
   // 1. Forms first — leads.form_id and form_submissions.form_id reference them.
@@ -55,6 +65,7 @@ export async function migrateLocalDataToSupabase(): Promise<MigrationResult> {
     const { error } = await supabase.from('forms').upsert(
       forms.map((form) => ({
         id: form.id,
+        organization_id: organizationId,
         name: form.name,
         description: form.description ?? null,
         status: form.status,
@@ -75,6 +86,7 @@ export async function migrateLocalDataToSupabase(): Promise<MigrationResult> {
     const { error } = await supabase.from('leads').upsert(
       leads.map((lead) => ({
         id: lead.id,
+        organization_id: organizationId,
         name: lead.name,
         email: lead.email,
         phone: lead.phone ?? null,
@@ -103,7 +115,12 @@ export async function migrateLocalDataToSupabase(): Promise<MigrationResult> {
     if (clearError) throw clearError
 
     const activityRows = leads.flatMap((lead) =>
-      lead.activity.map((entry) => ({ lead_id: lead.id, message: entry.message, created_at: entry.createdAt })),
+      lead.activity.map((entry) => ({
+        organization_id: organizationId,
+        lead_id: lead.id,
+        message: entry.message,
+        created_at: entry.createdAt,
+      })),
     )
     if (activityRows.length > 0) {
       const { error: activityError } = await supabase.from('lead_activity').insert(activityRows)
@@ -116,6 +133,7 @@ export async function migrateLocalDataToSupabase(): Promise<MigrationResult> {
     const { error } = await supabase.from('form_submissions').upsert(
       submissions.map((submission) => ({
         id: submission.id,
+        organization_id: organizationId,
         form_id: submission.formId,
         answers: submission.answers,
         score: submission.score,

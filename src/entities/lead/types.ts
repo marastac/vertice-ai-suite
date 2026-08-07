@@ -8,6 +8,7 @@ export interface LeadActivityEntry {
 
 export interface Lead {
   id: string
+  organizationId: string
   name: string
   email: string
   phone?: string

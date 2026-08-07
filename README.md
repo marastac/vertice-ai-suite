@@ -10,7 +10,7 @@ Lead AI is an AI-powered CRM designed for marketing agencies to capture, qualify
 - 📊 Dashboard with KPIs
 - 📝 Forms management
 - 💾 Local or Supabase persistence
-- 🏢 Multi-organization architecture (in progress)
+- 🏢 Multi-tenant: every organization's leads, forms, conversations, and chat configuration are isolated from every other organization's
 - 🔐 Authentication via Supabase Auth (login, registration, password recovery, protected dashboard routes)
 
 ## Tech Stack
@@ -87,6 +87,22 @@ With `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` set and the dev server running
 4. Click your name/avatar in the top-right corner of the dashboard to open the account menu, and use **Cerrar sesión** to log out — you're redirected to `/login`.
 5. From `/login`, click "¿Olvidaste tu contraseña?", submit your email, then open the reset link from your inbox — it lands on `/reset-password`, where you can set a new password.
 
+## Multi-tenancy (Supabase backend only)
+
+With `VITE_DATA_BACKEND=supabase`, every leads/forms/chat-config row belongs to one organization, and Row Level Security keeps one organization from ever reading another's data — see `CLAUDE.md`'s "Phase 8: Multi-tenancy" section for the full design (the RLS policy table in particular). This is orthogonal to authentication: every signed-in user automatically gets a personal organization on first login, no setup required.
+
+### Setting up the database
+
+- **Brand-new Supabase project**: run `supabase/schema.sql` once in the SQL editor, then optionally `supabase/seed.sql` for demo data.
+- **Existing project already running Phase 6/7** (i.e. you already had leads/forms/chat_configuration rows before this feature existed): run `supabase/migrations-phase8.sql` instead — it's non-destructive, backfilling every existing row into one default "Vertice Agency" organization rather than deleting anything. Read the comments at the top and bottom of that file: you still need to run one `insert into organization_members ...` statement by hand afterward (with your own Supabase Auth user id) to become a member of that organization, otherwise the app will auto-provision you a separate, empty one instead of connecting you to your existing data.
+
+### Testing tenant isolation
+
+1. Register two accounts at `/register` with different emails. Each gets its own organization automatically — check the sidebar's "Espacio de trabajo de …" label to confirm they differ.
+2. From account A, create a lead and a form. Log out, log in as account B — neither should be visible.
+3. Try it from the database side too: in the Supabase SQL editor, `select * from leads` as the `postgres` role bypasses RLS and shows everything (expected — RLS applies to API/client roles, not the SQL editor's own connection). To actually exercise the policies, use each account's own session in the app UI, or the REST API with that user's JWT.
+4. Public pages stay working for both organizations without login: create a form in account A, publish it, and visit `/f/:formId` in an incognito window — it loads and submits fine, and the resulting lead lands only in account A's `/leads`. Same for `/c/:orgSlug` — visit it with account A's organization slug (find it via the sidebar or `select slug from organizations`) and confirm the chat launches and any qualified lead appears only in that organization's dashboard.
+
 ## Running the app
 
 Run frontend and backend together:
@@ -119,7 +135,7 @@ curl http://localhost:8787/api/health
 With both servers running and `ANTHROPIC_API_KEY` configured:
 
 1. Go to `http://localhost:5173/chat-settings` and make sure the chat is toggled **active** (it's active by default until you change it).
-2. Open `http://localhost:5173/c/vertice-agency` — this is the only `orgSlug` wired up in this local MVP.
+2. Open `http://localhost:5173/c/vertice-agency` — `vertice-agency` is your organization's slug; on the local backend it's always `vertice-agency`, on the Supabase backend it's whatever slug your organization was created with (see the Multi-tenancy section below for finding it, and for testing more than one organization's chat side by side).
 3. Chat data (session + qualification result) shows up under `http://localhost:5173/conversations`, and once the assistant captures an email, a Lead appears under `http://localhost:5173/leads` with a linked conversation on its detail page.
 
 ## Building for production

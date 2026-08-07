@@ -17,6 +17,7 @@ export interface FormQuestion {
 
 export interface QualificationForm {
   id: string
+  organizationId: string
   name: string
   description?: string
   status: FormStatus
@@ -32,6 +33,7 @@ export interface FormSubmissionAnswer {
 
 export interface FormSubmission {
   id: string
+  organizationId: string
   formId: string
   answers: FormSubmissionAnswer[]
   score: number

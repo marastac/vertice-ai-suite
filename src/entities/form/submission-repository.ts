@@ -5,6 +5,7 @@ const STORAGE_KEY = 'lead-ai:form-submissions:v1'
 
 export interface CreateSubmissionInput {
   id?: string
+  organizationId: string
   formId: string
   answers: FormSubmissionAnswer[]
   score: number
@@ -13,8 +14,8 @@ export interface CreateSubmissionInput {
 }
 
 export interface SubmissionRepository {
-  listAll(): Promise<FormSubmission[]>
-  listByForm(formId: string): Promise<FormSubmission[]>
+  listAll(organizationId: string): Promise<FormSubmission[]>
+  listByForm(organizationId: string, formId: string): Promise<FormSubmission[]>
   create(input: CreateSubmissionInput): Promise<FormSubmission>
 }
 
@@ -27,18 +28,21 @@ function writeSubmissions(submissions: FormSubmission[]): void {
 }
 
 export const localStorageSubmissionRepository: SubmissionRepository = {
-  async listAll() {
-    return readSubmissions()
+  async listAll(organizationId) {
+    return readSubmissions().filter((submission) => submission.organizationId === organizationId)
   },
 
-  async listByForm(formId) {
-    return readSubmissions().filter((submission) => submission.formId === formId)
+  async listByForm(organizationId, formId) {
+    return readSubmissions().filter(
+      (submission) => submission.organizationId === organizationId && submission.formId === formId,
+    )
   },
 
   async create(input) {
     const submissions = readSubmissions()
     const submission: FormSubmission = {
       id: input.id ?? crypto.randomUUID(),
+      organizationId: input.organizationId,
       formId: input.formId,
       answers: input.answers,
       score: input.score,

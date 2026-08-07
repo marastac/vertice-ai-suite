@@ -4,13 +4,13 @@ import { useParams } from 'react-router-dom'
 import { CheckCircle2, Sparkles } from 'lucide-react'
 import { Button } from '@/shared/ui/Button'
 import { Card, CardContent } from '@/shared/ui/Card'
-import { useFormQuery, useSubmitFormMutation, validateFormAnswers } from '@/entities/form'
+import { usePublicFormQuery, useSubmitFormMutation, validateFormAnswers } from '@/entities/form'
 import type { FormSubmissionAnswer } from '@/entities/form'
 import { QuestionField } from './components/QuestionField'
 
 export function PublicFormPage() {
   const { formId } = useParams<{ formId: string }>()
-  const { data: form, isLoading } = useFormQuery(formId)
+  const { data: form, isLoading } = usePublicFormQuery(formId)
   const submitMutation = useSubmitFormMutation()
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})

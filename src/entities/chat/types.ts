@@ -7,6 +7,7 @@ export interface QualificationCriterion {
 }
 
 export interface ChatConfiguration {
+  organizationId: string
   assistantName: string
   welcomeMessage: string
   agencyDescription: string

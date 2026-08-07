@@ -34,13 +34,17 @@ function mapAnswersToLeadFields(questions: FormQuestion[], answers: FormSubmissi
 export interface SubmitQualificationFormResult {
   submission: FormSubmission
   leadId: string
+  organizationId: string
 }
 
 export async function submitQualificationForm(
   formId: string,
   answers: FormSubmissionAnswer[],
 ): Promise<SubmitQualificationFormResult> {
-  const form = await activeFormRepository.get(formId)
+  // Public, org-agnostic lookup — the visitor submitting this form was never
+  // a member of any organization. The form row itself carries the
+  // organizationId every downstream write below needs.
+  const form = await activeFormRepository.getPublic(formId)
   if (!form) {
     throw new Error('Formulario no encontrado.')
   }
@@ -54,6 +58,7 @@ export async function submitQualificationForm(
   const { name, email, phone, company } = mapAnswersToLeadFields(form.questions, answers)
 
   const lead = await activeLeadRepository.create({
+    organizationId: form.organizationId,
     name,
     email,
     phone,
@@ -68,11 +73,12 @@ export async function submitQualificationForm(
 
   const submission = await activeSubmissionRepository.create({
     id: submissionId,
+    organizationId: form.organizationId,
     formId: form.id,
     answers,
     score,
     leadId: lead.id,
   })
 
-  return { submission, leadId: lead.id }
+  return { submission, leadId: lead.id, organizationId: form.organizationId }
 }

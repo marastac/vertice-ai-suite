@@ -1,9 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
+import { useOrganization } from '@/entities/organization'
 import { cn } from '@/shared/lib/cn'
 import { navItems } from './nav-config'
 
 export function Sidebar() {
+  const { organization } = useOrganization()
+
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-800/80 bg-vertice-surface lg:flex">
       <div className="flex h-16 items-center gap-2 px-6">
@@ -36,7 +39,9 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-slate-800/80 px-4 py-4">
-        <p className="text-xs text-slate-500">Espacio de trabajo de Vertice Agency</p>
+        <p className="truncate text-xs text-slate-500">
+          Espacio de trabajo de {organization?.name ?? '…'}
+        </p>
       </div>
     </aside>
   )

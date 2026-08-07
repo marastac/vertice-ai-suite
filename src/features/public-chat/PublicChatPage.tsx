@@ -10,13 +10,11 @@ import {
   streamChatMessage,
   syncLeadFromQualification,
   useBackendHealthQuery,
-  useChatConfigQuery,
+  usePublicChatConfigQuery,
 } from '@/entities/chat'
 import type { ChatMessage, ChatQualificationResult } from '@/entities/chat'
 import { ChatBubble } from './components/ChatBubble'
 import { ChatComposer } from './components/ChatComposer'
-
-const SUPPORTED_ORG_SLUG = 'vertice-agency'
 
 function ChatShell({ children }: { children: ReactNode }) {
   return (
@@ -45,8 +43,15 @@ function MessagePanel({ title, description }: { title: string; description: stri
 
 export function PublicChatPage() {
   const { orgSlug } = useParams<{ orgSlug: string }>()
-  const { data: config, isLoading: isConfigLoading } = useChatConfigQuery()
+  // Org-agnostic, public lookup: resolves organizations.slug -> chat_configuration
+  // in one call (see ChatConfigRepository.getBySlug()). This is what makes
+  // /c/:orgSlug work for any organization now, instead of the single
+  // hardcoded 'vertice-agency' slug from before Phase 8.
+  const { data: resolved, isLoading: isConfigLoading } = usePublicChatConfigQuery(orgSlug)
   const { data: health, isLoading: isHealthLoading } = useBackendHealthQuery()
+
+  const config = resolved?.config
+  const organizationId = resolved?.organizationId
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -60,21 +65,21 @@ export function PublicChatPage() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const isOrgSupported = orgSlug === SUPPORTED_ORG_SLUG
+  const isOrgSupported = Boolean(resolved)
   const isLoading = isConfigLoading || isHealthLoading
-  const canStartChat = Boolean(isOrgSupported && config?.isActive && health?.reachable && health.aiConfigured)
+  const canStartChat = Boolean(resolved && config?.isActive && health?.reachable && health.aiConfigured)
 
   const bootstrap = useCallback(async () => {
-    if (!config || hasCreatedSessionRef.current) return
+    if (!config || !organizationId || !orgSlug || hasCreatedSessionRef.current) return
     hasCreatedSessionRef.current = true
     setIsConnecting(true)
     setConnectError(null)
 
     try {
-      const result = await createRemoteChatSession(SUPPORTED_ORG_SLUG, config)
+      const result = await createRemoteChatSession(orgSlug, config)
       await localStorageChatSessionRepository.create({
         id: result.sessionId,
-        orgSlug: SUPPORTED_ORG_SLUG,
+        orgSlug,
         assistantName: result.assistantName,
         welcomeMessage: result.welcomeMessage,
       })
@@ -88,7 +93,7 @@ export function PublicChatPage() {
     } finally {
       setIsConnecting(false)
     }
-  }, [config])
+  }, [config, organizationId, orgSlug])
 
   useEffect(() => {
     if (isLoading || !canStartChat) return
@@ -104,9 +109,9 @@ export function PublicChatPage() {
   }, [])
 
   async function handleQualification(currentSessionId: string, qualification: ChatQualificationResult | null) {
-    if (!qualification) return
+    if (!qualification || !organizationId) return
     await localStorageChatSessionRepository.setQualification(currentSessionId, qualification)
-    await syncLeadFromQualification(currentSessionId, qualification)
+    await syncLeadFromQualification(organizationId, currentSessionId, qualification)
   }
 
   async function sendMessage(text: string) {

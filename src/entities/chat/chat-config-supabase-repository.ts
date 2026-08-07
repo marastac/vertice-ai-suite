@@ -3,9 +3,8 @@ import type { ChatConfigRepository } from './chat-config-repository'
 import { createDefaultChatConfiguration } from './defaults'
 import type { ChatConfiguration } from './types'
 
-const ORG_SLUG = 'vertice-agency'
-
 interface ChatConfigurationRow {
+  organization_id: string
   assistant_name: string
   welcome_message: string
   agency_description: string
@@ -22,6 +21,7 @@ interface ChatConfigurationRow {
 
 function fromRow(row: ChatConfigurationRow): ChatConfiguration {
   return {
+    organizationId: row.organization_id,
     assistantName: row.assistant_name,
     welcomeMessage: row.welcome_message,
     agencyDescription: row.agency_description,
@@ -39,7 +39,7 @@ function fromRow(row: ChatConfigurationRow): ChatConfiguration {
 
 function toRow(config: ChatConfiguration) {
   return {
-    org_slug: ORG_SLUG,
+    organization_id: config.organizationId,
     assistant_name: config.assistantName,
     welcome_message: config.welcomeMessage,
     agency_description: config.agencyDescription,
@@ -54,15 +54,23 @@ function toRow(config: ChatConfiguration) {
   }
 }
 
-async function fetchRow(): Promise<ChatConfigurationRow> {
-  const { data, error } = await supabase.from('chat_configuration').select('*').eq('org_slug', ORG_SLUG).single()
+async function fetchRow(organizationId: string): Promise<ChatConfigurationRow> {
+  const { data, error } = await supabase
+    .from('chat_configuration')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .single()
   if (error) throw error
   return data
 }
 
 export const supabaseChatConfigRepository: ChatConfigRepository = {
-  async get() {
-    const { data, error } = await supabase.from('chat_configuration').select('*').eq('org_slug', ORG_SLUG).maybeSingle()
+  async get(organizationId) {
+    const { data, error } = await supabase
+      .from('chat_configuration')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .maybeSingle()
     if (error) throw error
     if (data) return fromRow(data)
 
@@ -73,27 +81,50 @@ export const supabaseChatConfigRepository: ChatConfigRepository = {
     // caller's insert actually won — so every caller re-fetches afterward.
     const { error: seedError } = await supabase
       .from('chat_configuration')
-      .upsert(toRow(createDefaultChatConfiguration()), { onConflict: 'org_slug', ignoreDuplicates: true })
+      .upsert(toRow(createDefaultChatConfiguration(organizationId)), {
+        onConflict: 'organization_id',
+        ignoreDuplicates: true,
+      })
     if (seedError) throw seedError
 
-    return fromRow(await fetchRow())
+    return fromRow(await fetchRow(organizationId))
   },
 
-  async save(config) {
+  async save(organizationId, config) {
     const { error } = await supabase
       .from('chat_configuration')
-      .update({ ...toRow(config), updated_at: new Date().toISOString() })
-      .eq('org_slug', ORG_SLUG)
+      .update({ ...toRow(config), organization_id: organizationId, updated_at: new Date().toISOString() })
+      .eq('organization_id', organizationId)
     if (error) throw error
-    return fromRow(await fetchRow())
+    return fromRow(await fetchRow(organizationId))
   },
 
-  async reset() {
+  async reset(organizationId) {
     const { error } = await supabase
       .from('chat_configuration')
-      .update({ ...toRow(createDefaultChatConfiguration()), updated_at: new Date().toISOString() })
-      .eq('org_slug', ORG_SLUG)
+      .update({ ...toRow(createDefaultChatConfiguration(organizationId)), updated_at: new Date().toISOString() })
+      .eq('organization_id', organizationId)
     if (error) throw error
-    return fromRow(await fetchRow())
+    return fromRow(await fetchRow(organizationId))
+  },
+
+  async getBySlug(slug) {
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('slug', slug)
+      .maybeSingle()
+    if (orgError) throw orgError
+    if (!org) return undefined
+
+    const { data, error } = await supabase
+      .from('chat_configuration')
+      .select('*')
+      .eq('organization_id', org.id)
+      .maybeSingle()
+    if (error) throw error
+    if (!data) return undefined
+
+    return { config: fromRow(data), organizationId: org.id }
   },
 }

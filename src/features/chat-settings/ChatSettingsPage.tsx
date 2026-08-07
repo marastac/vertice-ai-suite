@@ -54,7 +54,10 @@ export function ChatSettingsPage() {
   // forever ("Maximum update depth exceeded"). Memoizing on `config` keeps
   // the reference stable across renders that don't actually change the data.
   const formValues = useMemo(() => (config ? toFormValues(config) : undefined), [config])
-  const defaultFormValues = useMemo(() => toFormValues(createDefaultChatConfiguration()), [])
+  // organizationId is irrelevant here — toFormValues() never reads it, this
+  // call only exists to derive react-hook-form's placeholder defaultValues
+  // before the real config has loaded.
+  const defaultFormValues = useMemo(() => toFormValues(createDefaultChatConfiguration('')), [])
 
   const {
     control,

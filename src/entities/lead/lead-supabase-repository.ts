@@ -12,6 +12,7 @@ interface LeadActivityRow {
 
 interface LeadRow {
   id: string
+  organization_id: string
   name: string
   email: string
   phone: string | null
@@ -38,6 +39,7 @@ const LEAD_SELECT = '*, lead_activity(*)'
 function fromRow(row: LeadRow): Lead {
   return {
     id: row.id,
+    organizationId: row.organization_id,
     name: row.name,
     email: row.email,
     phone: row.phone ?? undefined,
@@ -74,6 +76,7 @@ function fromRow(row: LeadRow): Lead {
  */
 function buildRow(input: Partial<CreateLeadInput>): Record<string, unknown> {
   const row: Record<string, unknown> = {}
+  if ('organizationId' in input) row.organization_id = input.organizationId
   if ('name' in input) row.name = input.name
   if ('email' in input) row.email = input.email
   if ('phone' in input) row.phone = input.phone ?? null
@@ -91,38 +94,59 @@ function buildRow(input: Partial<CreateLeadInput>): Record<string, unknown> {
   return row
 }
 
-async function createNameResolver(): Promise<(memberId: string | undefined) => string | undefined> {
-  const members = await supabaseTeamMemberRepository.list()
+async function createNameResolver(organizationId: string): Promise<(memberId: string | undefined) => string | undefined> {
+  const members = await supabaseTeamMemberRepository.list(organizationId)
   return (memberId) => members.find((member) => member.id === memberId)?.name
 }
 
-async function insertActivity(leadId: string, messages: string[]): Promise<void> {
+async function insertActivity(organizationId: string, leadId: string, messages: string[]): Promise<void> {
   if (messages.length === 0) return
-  const { error } = await supabase.from('lead_activity').insert(messages.map((message) => ({ lead_id: leadId, message })))
+  const { error } = await supabase
+    .from('lead_activity')
+    .insert(messages.map((message) => ({ organization_id: organizationId, lead_id: leadId, message })))
   if (error) throw error
 }
 
-async function fetchById(id: string): Promise<Lead> {
-  const { data, error } = await supabase.from('leads').select(LEAD_SELECT).eq('id', id).single()
+async function fetchById(organizationId: string, id: string): Promise<Lead> {
+  const { data, error } = await supabase
+    .from('leads')
+    .select(LEAD_SELECT)
+    .eq('organization_id', organizationId)
+    .eq('id', id)
+    .single()
   if (error) throw error
   return fromRow(data)
 }
 
 export const supabaseLeadRepository: LeadRepository = {
-  async list() {
-    const { data, error } = await supabase.from('leads').select(LEAD_SELECT).order('created_at', { ascending: false })
+  async list(organizationId) {
+    const { data, error } = await supabase
+      .from('leads')
+      .select(LEAD_SELECT)
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
     if (error) throw error
     return data.map(fromRow)
   },
 
-  async get(id) {
-    const { data, error } = await supabase.from('leads').select(LEAD_SELECT).eq('id', id).maybeSingle()
+  async get(organizationId, id) {
+    const { data, error } = await supabase
+      .from('leads')
+      .select(LEAD_SELECT)
+      .eq('organization_id', organizationId)
+      .eq('id', id)
+      .maybeSingle()
     if (error) throw error
     return data ? fromRow(data) : undefined
   },
 
-  async getByChatSessionId(sessionId) {
-    const { data, error } = await supabase.from('leads').select(LEAD_SELECT).eq('chat_session_id', sessionId).maybeSingle()
+  async getByChatSessionId(organizationId, sessionId) {
+    const { data, error } = await supabase
+      .from('leads')
+      .select(LEAD_SELECT)
+      .eq('organization_id', organizationId)
+      .eq('chat_session_id', sessionId)
+      .maybeSingle()
     if (error) throw error
     return data ? fromRow(data) : undefined
   },
@@ -134,41 +158,42 @@ export const supabaseLeadRepository: LeadRepository = {
     const { data: inserted, error } = await supabase.from('leads').insert(row).select('id').single()
     if (error) throw error
 
-    await insertActivity(inserted.id, [buildCreateActivityMessage(input)])
-    return fetchById(inserted.id)
+    await insertActivity(input.organizationId, inserted.id, [buildCreateActivityMessage(input)])
+    return fetchById(input.organizationId, inserted.id)
   },
 
-  async update(id, patch) {
-    const existing = await fetchById(id)
-    const resolveName = await createNameResolver()
+  async update(organizationId, id, patch) {
+    const existing = await fetchById(organizationId, id)
+    const resolveName = await createNameResolver(organizationId)
     const messages = buildUpdateActivityMessages(existing, patch, resolveName)
 
     const row = buildRow(patch)
     row.last_activity_at = new Date().toISOString()
 
-    const { error } = await supabase.from('leads').update(row).eq('id', id)
+    const { error } = await supabase.from('leads').update(row).eq('organization_id', organizationId).eq('id', id)
     if (error) throw error
 
-    await insertActivity(id, messages)
-    return fetchById(id)
+    await insertActivity(organizationId, id, messages)
+    return fetchById(organizationId, id)
   },
 
-  async remove(id) {
+  async remove(organizationId, id) {
     // lead_activity rows cascade-delete via the FK's ON DELETE CASCADE.
-    const { error } = await supabase.from('leads').delete().eq('id', id)
+    const { error } = await supabase.from('leads').delete().eq('organization_id', organizationId).eq('id', id)
     if (error) throw error
   },
 
-  async upsertByChatSession(sessionId, input) {
+  async upsertByChatSession(organizationId, sessionId, input) {
     // Best-effort read, used only to decide which activity message(s) to
     // log — NOT what makes this race-free. Race-freedom comes from the
-    // upsert below, backed by the partial unique index on
-    // leads.chat_session_id (see supabase/schema.sql): whichever of two
-    // concurrent calls resolves second still lands on the same row via ON
-    // CONFLICT, so at most one lead ever exists per chat session even if
-    // this read is stale by the time the upsert runs. Worst case under an
-    // actual race is an imprecise activity log line, never a duplicate lead.
-    const existing = await supabaseLeadRepository.getByChatSessionId(sessionId)
+    // upsert below, backed by the unique index on leads.chat_session_id
+    // (see supabase/schema.sql): whichever of two concurrent calls resolves
+    // second still lands on the same row via ON CONFLICT, so at most one
+    // lead ever exists per chat session even if this read is stale by the
+    // time the upsert runs. Worst case under an actual race is an imprecise
+    // activity log line, never a duplicate lead. chat_session_id is unique
+    // globally (not per-organization) — see schema.sql's note on why.
+    const existing = await supabaseLeadRepository.getByChatSessionId(organizationId, sessionId)
 
     const row = buildRow(input)
     row.chat_session_id = sessionId
@@ -177,16 +202,16 @@ export const supabaseLeadRepository: LeadRepository = {
     const { error } = await supabase.from('leads').upsert(row, { onConflict: 'chat_session_id' })
     if (error) throw error
 
-    const result = await supabaseLeadRepository.getByChatSessionId(sessionId)
+    const result = await supabaseLeadRepository.getByChatSessionId(organizationId, sessionId)
     if (!result) throw new Error(`No se encontró el lead para la sesión de chat ${sessionId} tras el upsert.`)
 
     if (existing) {
-      const resolveName = await createNameResolver()
-      await insertActivity(result.id, buildUpdateActivityMessages(existing, input, resolveName))
+      const resolveName = await createNameResolver(organizationId)
+      await insertActivity(organizationId, result.id, buildUpdateActivityMessages(existing, input, resolveName))
     } else {
-      await insertActivity(result.id, [buildCreateActivityMessage({ ...input, chatSessionId: sessionId })])
+      await insertActivity(organizationId, result.id, [buildCreateActivityMessage({ ...input, chatSessionId: sessionId })])
     }
 
-    return fetchById(result.id)
+    return fetchById(organizationId, result.id)
   },
 }

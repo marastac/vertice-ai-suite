@@ -22,7 +22,7 @@ const mockIntegrations: MockIntegration[] = [
 export function IntegrationsPage() {
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Integraciones" description="Conecta Lead AI con las herramientas que ya usa tu agencia." />
+      <PageHeader title="Integraciones" description="Conecta Lead AI con las herramientas que ya usa tu negocio." />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {mockIntegrations.map((integration) => (

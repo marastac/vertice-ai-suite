@@ -20,6 +20,7 @@ import {
   useSaveChatConfigMutation,
 } from '@/entities/chat'
 import type { ChatConfiguration, ChatSettingsInput, ChatSettingsValues } from '@/entities/chat'
+import { useOrganization } from '@/entities/organization'
 import { CriteriaEditor } from './components/CriteriaEditor'
 import { CollectedInfoEditor } from './components/CollectedInfoEditor'
 import { ChatPreview } from './components/ChatPreview'
@@ -41,6 +42,7 @@ function toFormValues(config: ChatConfiguration): ChatSettingsInput {
 }
 
 export function ChatSettingsPage() {
+  const { organization } = useOrganization()
   const { data: config, isLoading } = useChatConfigQuery()
   const saveMutation = useSaveChatConfigMutation()
   const resetMutation = useResetChatConfigMutation()
@@ -140,7 +142,7 @@ export function ChatSettingsPage() {
               <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3">
                 <div>
                   <p className="text-sm font-medium text-slate-200">Chat público activo</p>
-                  <p className="text-xs text-slate-500">Controla si /c/vertice-agency acepta conversaciones.</p>
+                  <p className="text-xs text-slate-500">Controla si /c/{organization?.slug ?? '…'} acepta conversaciones.</p>
                 </div>
                 <Switch
                   checked={watchedIsActive}
@@ -151,7 +153,7 @@ export function ChatSettingsPage() {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Input
                   label="Nombre del asistente *"
-                  placeholder="Asistente de Vértice"
+                  placeholder="Asistente virtual"
                   error={errors.assistantName?.message}
                   {...register('assistantName')}
                 />
@@ -179,15 +181,15 @@ export function ChatSettingsPage() {
                   {...register('welcomeMessage')}
                 />
                 <Textarea
-                  label="Descripción de la agencia"
-                  placeholder="¿A qué se dedica tu agencia?"
+                  label="Descripción de tu negocio"
+                  placeholder="¿A qué te dedicas? (creador de contenido, curso online, tienda online…)"
                   className="sm:col-span-2"
                   error={errors.agencyDescription?.message}
                   {...register('agencyDescription')}
                 />
                 <Textarea
-                  label="Servicios ofrecidos"
-                  placeholder="Marketing digital, SEO, automatización…"
+                  label="Productos o servicios ofrecidos"
+                  placeholder="Cursos, mentorías, productos digitales, colaboraciones…"
                   className="sm:col-span-2"
                   error={errors.servicesOffered?.message}
                   {...register('servicesOffered')}

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/Card'
 import { Badge } from '@/shared/ui/Badge'
 import { chatToneLabel } from '@/entities/chat'
 import type { ChatTone } from '@/entities/chat'
+import { useOrganization } from '@/entities/organization'
 
 export interface ChatPreviewProps {
   assistantName: string
@@ -12,6 +13,8 @@ export interface ChatPreviewProps {
 }
 
 export function ChatPreview({ assistantName, welcomeMessage, tone, isActive }: ChatPreviewProps) {
+  const { organization } = useOrganization()
+
   return (
     <Card>
       <CardHeader>
@@ -36,7 +39,8 @@ export function ChatPreview({ assistantName, welcomeMessage, tone, isActive }: C
         </div>
 
         <p className="text-xs text-slate-500">
-          Así es como los visitantes verán el inicio de la conversación en <code>/c/vertice-agency</code>.
+          Así es como los visitantes verán el inicio de la conversación en{' '}
+          <code>/c/{organization?.slug ?? '…'}</code>.
         </p>
       </CardContent>
     </Card>

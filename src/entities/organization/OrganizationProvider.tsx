@@ -4,10 +4,11 @@ import { useAuth } from '@/entities/auth'
 import { activeTeamMemberRepository } from '@/entities/team-member'
 import { dataBackend } from '@/shared/lib/data-backend'
 import { activeOrganizationRepository } from './active-organization-repository'
+import { completeOrganizationOnboarding } from './onboarding-service'
 import { OrganizationContext } from './organization-context'
 import type { OrganizationContextValue } from './organization-context'
 import { LOCAL_ORGANIZATION_ID } from './types'
-import type { Organization, OrganizationMembership, OrganizationRole } from './types'
+import type { BusinessType, Organization, OrganizationMembership, OrganizationRole } from './types'
 
 // slug matches organization-repository.ts's localOrganizationRepository —
 // see its comment for why this is 'vertice-agency', not 'local'.
@@ -100,6 +101,22 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
 
   const active = memberships.find((membership) => membership.organization.id === activeOrganizationId)
 
+  const completeOnboarding = useCallback(
+    async (businessType: BusinessType) => {
+      if (!active) throw new Error('No hay una organización activa.')
+      const updated = await completeOrganizationOnboarding(active.organization.id, businessType)
+      // Patch in place rather than re-fetching memberships — OnboardingGate
+      // reads `organization.onboardingCompletedAt` on the very next render,
+      // so this needs to be synchronous with the mutation resolving.
+      setMemberships((current) =>
+        current.map((membership) =>
+          membership.organization.id === updated.id ? { ...membership, organization: updated } : membership,
+        ),
+      )
+    },
+    [active],
+  )
+
   const value: OrganizationContextValue = useMemo(
     () => ({
       organization: active?.organization ?? null,
@@ -108,8 +125,9 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
       isLoading,
       error,
       switchOrganization,
+      completeOnboarding,
     }),
-    [active, memberships, isLoading, error, switchOrganization],
+    [active, memberships, isLoading, error, switchOrganization, completeOnboarding],
   )
 
   return <OrganizationContext.Provider value={value}>{children}</OrganizationContext.Provider>

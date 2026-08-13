@@ -7,11 +7,13 @@ import { Select } from '@/shared/ui/Select'
 import { Button } from '@/shared/ui/Button'
 import { EmptyState } from '@/shared/ui/EmptyState'
 import { chatQualificationStatusLabel, useChatSessionsQuery } from '@/entities/chat'
+import { useOrganization } from '@/entities/organization'
 import { ConversationsTable } from './components/ConversationsTable'
 import { defaultConversationFilters } from './conversation-filters'
 import type { ConversationFilters, ConversationStatusFilter } from './conversation-filters'
 
 export function ConversationsPage() {
+  const { organization } = useOrganization()
   const { data: sessions, isLoading, isError, refetch } = useChatSessionsQuery()
   const [filters, setFilters] = useState<ConversationFilters>(defaultConversationFilters)
 
@@ -106,7 +108,7 @@ export function ConversationsPage() {
         <EmptyState
           icon={<MessagesSquare className="size-5" />}
           title="Todavía no hay conversaciones"
-          description="Cuando un visitante hable con el chat con IA en /c/vertice-agency, aparecerá aquí."
+          description={`Cuando un visitante hable con el chat con IA en /c/${organization?.slug ?? '…'}, aparecerá aquí.`}
         />
       )}
 

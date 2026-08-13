@@ -1,9 +1,19 @@
 export type OrganizationRole = 'owner' | 'admin' | 'member' | 'viewer'
 
+/**
+ * Phase 9: chosen once, during /onboarding, for a brand-new organization.
+ * Drives which chat-assistant copy and starter form get created for it —
+ * see entities/chat/business-type-templates.ts and entities/form/starter-templates.ts.
+ */
+export type BusinessType = 'content_creator' | 'course_creator' | 'online_business'
+
 export interface Organization {
   id: string
   name: string
   slug: string
+  businessType?: BusinessType
+  /** Undefined/null means this organization hasn't been through /onboarding yet — see app/layout/OnboardingGate.tsx. */
+  onboardingCompletedAt?: string
 }
 
 export interface OrganizationMembership {

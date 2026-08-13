@@ -15,7 +15,7 @@ export function Sidebar() {
         </span>
         <div className="leading-tight">
           <p className="text-sm font-semibold text-white">Lead AI</p>
-          <p className="text-[11px] text-slate-500">Vertice AI Suite</p>
+          <p className="text-[11px] text-slate-500">Califica tus clientes con IA</p>
         </div>
       </div>
 

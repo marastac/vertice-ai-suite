@@ -16,22 +16,26 @@
 -- that's a separate, per-user export/import step (see
 -- src/entities/*/export-import.ts once implemented), not this file.
 --
--- Phase 8: every row below belongs to one seeded "Vertice Agency"
+-- Phase 8: every row below belongs to one seeded "Vertice Digital"
 -- organization (fixed id below). This script cannot know your auth.users
 -- id, so it cannot make you a member of that organization automatically —
 -- see the very bottom of this file for the one statement you still need to
 -- run by hand after signing up, same as supabase/migrations-phase8.sql.
+--
+-- Phase 9: onboarding_completed_at is set below so this demo organization
+-- never shows the /onboarding screen — it's meant to already look like an
+-- established account with real data, not a brand-new sign-up.
 
 -- ── organizations (seed org every other row below belongs to) ───────────
-insert into organizations (id, name, slug) values
-  ('00000000-0000-0000-0000-000000000000', 'Vertice Agency', 'vertice-agency')
+insert into organizations (id, name, slug, onboarding_completed_at) values
+  ('00000000-0000-0000-0000-000000000000', 'Vertice Digital', 'vertice-agency', '2026-07-01T09:00:00Z')
 on conflict (id) do nothing;
 
 -- ── team_members (mirrors entities/team-member/mock-data.ts) ────────────
 insert into team_members (id, organization_id, name, email, role) values
-  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'Alex Morgan', 'alex@verticeagency.com', 'owner'),
-  ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000000', 'Jordan Lee', 'jordan@verticeagency.com', 'admin'),
-  ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000', 'Sam Rivera', 'sam@verticeagency.com', 'member')
+  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'Alex Morgan', 'alex@leadai.app', 'owner'),
+  ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000000', 'Jordan Lee', 'jordan@leadai.app', 'admin'),
+  ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000', 'Sam Rivera', 'sam@leadai.app', 'member')
 on conflict (id) do nothing;
 
 -- ── forms (mirrors entities/form/mock-data.ts) ───────────────────────────
@@ -39,83 +43,82 @@ insert into forms (id, organization_id, name, description, status, questions, cr
 (
   '00000000-0000-0000-0000-000000000101',
   '00000000-0000-0000-0000-000000000000',
-  'Formulario de descubrimiento para agencias',
-  'Califica agencias potenciales antes de la primera llamada de descubrimiento.',
+  'Formulario de colaboraciones y patrocinios',
+  'Califica propuestas de marcas y patrocinios antes de aceptar una colaboración.',
   'active',
   '[
     {"id":"form-01-q1","type":"short_text","label":"Nombre completo","required":true,"points":10},
     {"id":"form-01-q2","type":"email","label":"Correo electrónico","required":true,"points":20},
     {"id":"form-01-q3","type":"phone","label":"Teléfono","required":false,"points":5},
-    {"id":"form-01-q4","type":"short_text","label":"Empresa","required":true,"points":10},
-    {"id":"form-01-q5","type":"single_choice","label":"¿Cuál es tu presupuesto mensual de marketing?","required":true,
+    {"id":"form-01-q4","type":"short_text","label":"Marca o proyecto","required":true,"points":10},
+    {"id":"form-01-q5","type":"single_choice","label":"¿Cuál es el presupuesto de la colaboración?","required":true,
      "options":[
-       {"id":"form-01-q5-o1","label":"Menos de 1.000 €","points":0},
-       {"id":"form-01-q5-o2","label":"1.000 € - 5.000 €","points":15},
-       {"id":"form-01-q5-o3","label":"5.000 € - 15.000 €","points":25},
-       {"id":"form-01-q5-o4","label":"Más de 15.000 €","points":30}
+       {"id":"form-01-q5-o1","label":"Menos de 300 €","points":0},
+       {"id":"form-01-q5-o2","label":"300 € - 1.000 €","points":15},
+       {"id":"form-01-q5-o3","label":"1.000 € - 3.000 €","points":25},
+       {"id":"form-01-q5-o4","label":"Más de 3.000 €","points":30}
      ]},
-    {"id":"form-01-q6","type":"single_choice","label":"¿Cuándo te gustaría empezar?","required":true,
+    {"id":"form-01-q6","type":"single_choice","label":"¿Cuándo te gustaría lanzar la colaboración?","required":true,
      "options":[
        {"id":"form-01-q6-o1","label":"Inmediatamente","points":15},
        {"id":"form-01-q6-o2","label":"En 1-3 meses","points":10},
        {"id":"form-01-q6-o3","label":"Más adelante","points":0}
      ]},
-    {"id":"form-01-q7","type":"yes_no","label":"¿Tienes autoridad para tomar decisiones de compra?","required":true,
+    {"id":"form-01-q7","type":"yes_no","label":"¿Tienes autoridad para aprobar el pago de la colaboración?","required":true,
      "options":[
        {"id":"form-01-q7-yes","label":"Sí","points":15},
        {"id":"form-01-q7-no","label":"No","points":0}
      ]},
-    {"id":"form-01-q8","type":"long_text","label":"Cuéntanos sobre tus objetivos","required":false,"points":5}
+    {"id":"form-01-q8","type":"long_text","label":"Cuéntanos sobre tu marca o campaña","required":false,"points":5}
   ]'::jsonb,
   '2026-07-05T10:00:00Z', '2026-07-12T09:30:00Z'
 ),
 (
   '00000000-0000-0000-0000-000000000102',
   '00000000-0000-0000-0000-000000000000',
-  'Calificador de encaje para ecommerce',
-  'Evalúa si una tienda online encaja con nuestros servicios de marketing.',
+  'Formulario de inscripción a mi curso online',
+  'Califica a los interesados en tu curso antes de invitarlos a inscribirse.',
   'active',
   '[
     {"id":"form-02-q1","type":"short_text","label":"Nombre completo","required":true,"points":10},
     {"id":"form-02-q2","type":"email","label":"Correo electrónico","required":true,"points":15},
-    {"id":"form-02-q3","type":"short_text","label":"Empresa","required":true,"points":10},
-    {"id":"form-02-q4","type":"single_choice","label":"¿Qué plataforma de ecommerce utilizas?","required":true,
+    {"id":"form-02-q3","type":"single_choice","label":"¿Cuál es tu nivel de experiencia?","required":true,
      "options":[
-       {"id":"form-02-q4-o1","label":"Shopify","points":15},
-       {"id":"form-02-q4-o2","label":"WooCommerce","points":10},
-       {"id":"form-02-q4-o3","label":"Otra","points":5},
-       {"id":"form-02-q4-o4","label":"Ninguna todavía","points":0}
+       {"id":"form-02-q3-o1","label":"Principiante","points":10},
+       {"id":"form-02-q3-o2","label":"Intermedio","points":15},
+       {"id":"form-02-q3-o3","label":"Avanzado","points":10}
      ]},
-    {"id":"form-02-q5","type":"single_choice","label":"¿Cuál es tu facturación mensual aproximada?","required":true,
+    {"id":"form-02-q4","type":"yes_no","label":"¿Puedes invertir en el curso en este momento?","required":true,
      "options":[
-       {"id":"form-02-q5-o1","label":"Menos de 5.000 €","points":0},
-       {"id":"form-02-q5-o2","label":"5.000 € - 20.000 €","points":15},
-       {"id":"form-02-q5-o3","label":"Más de 20.000 €","points":25}
+       {"id":"form-02-q4-yes","label":"Sí","points":25},
+       {"id":"form-02-q4-no","label":"No","points":0}
      ]},
-    {"id":"form-02-q6","type":"yes_no","label":"¿Inviertes actualmente en publicidad digital?","required":true,
+    {"id":"form-02-q5","type":"single_choice","label":"¿Cuándo te gustaría empezar?","required":true,
      "options":[
-       {"id":"form-02-q6-yes","label":"Sí","points":15},
-       {"id":"form-02-q6-no","label":"No","points":0}
-     ]}
+       {"id":"form-02-q5-o1","label":"Inmediatamente","points":25},
+       {"id":"form-02-q5-o2","label":"En 1-3 meses","points":15},
+       {"id":"form-02-q5-o3","label":"Más adelante","points":0}
+     ]},
+    {"id":"form-02-q6","type":"long_text","label":"¿Cuál es tu objetivo principal al tomar el curso?","required":false,"points":10}
   ]'::jsonb,
   '2026-07-08T11:00:00Z', '2026-07-14T15:20:00Z'
 ),
 (
   '00000000-0000-0000-0000-000000000103',
   '00000000-0000-0000-0000-000000000000',
-  'Filtro de presupuesto empresarial',
-  'Filtra leads empresariales por presupuesto disponible antes de asignar un ejecutivo de cuentas.',
+  'Formulario de interés en mis productos o servicios',
+  'Filtra clientes potenciales por presupuesto antes de contactarlos.',
   'draft',
   '[
     {"id":"form-03-q1","type":"short_text","label":"Nombre completo","required":true,"points":10},
     {"id":"form-03-q2","type":"email","label":"Correo electrónico","required":true,"points":15},
-    {"id":"form-03-q3","type":"short_text","label":"Empresa","required":true,"points":10},
-    {"id":"form-03-q4","type":"number","label":"Número de empleados","required":false,"points":5},
-    {"id":"form-03-q5","type":"single_choice","label":"Presupuesto anual disponible","required":true,
+    {"id":"form-03-q3","type":"short_text","label":"¿Qué producto o servicio te interesa?","required":true,"points":10},
+    {"id":"form-03-q4","type":"number","label":"Cantidad o volumen que necesitas","required":false,"points":5},
+    {"id":"form-03-q5","type":"single_choice","label":"Presupuesto aproximado disponible","required":true,
      "options":[
-       {"id":"form-03-q5-o1","label":"Menos de 10.000 €","points":0},
-       {"id":"form-03-q5-o2","label":"10.000 € - 50.000 €","points":20},
-       {"id":"form-03-q5-o3","label":"Más de 50.000 €","points":35}
+       {"id":"form-03-q5-o1","label":"Menos de 100 €","points":0},
+       {"id":"form-03-q5-o2","label":"100 € - 500 €","points":20},
+       {"id":"form-03-q5-o3","label":"Más de 500 €","points":35}
      ]}
   ]'::jsonb,
   '2026-07-15T09:00:00Z', '2026-07-15T09:00:00Z'
@@ -167,33 +170,35 @@ insert into lead_activity (organization_id, lead_id, message, created_at) values
 on conflict do nothing;
 
 -- ── chat_configuration default row (mirrors entities/chat/defaults.ts) ──
--- Uses the same copy as createDefaultChatConfiguration(). Criteria ids
--- below are fresh UUID literals (the original uses crypto.randomUUID() at
--- runtime — any valid uuid is fine, nothing keys off these specific values).
+-- Uses the same copy as createDefaultChatConfiguration() — the neutral
+-- fallback template (Phase 9), not one of the business-type-specific ones
+-- in entities/chat/business-type-templates.ts, since this demo organization
+-- predates the onboarding flow (onboarding_completed_at is set above).
+-- Criteria ids below are fresh UUID literals (the original uses
+-- crypto.randomUUID() at runtime — any valid uuid is fine here).
 insert into chat_configuration (
   organization_id, assistant_name, welcome_message, agency_description, services_offered,
   tone, language, questions_to_collect, criteria, min_qualified_score,
   additional_instructions, is_active
 ) values (
   '00000000-0000-0000-0000-000000000000',
-  'Asistente de Vértice',
-  '¡Hola! 👋 Soy el asistente virtual de la agencia. Cuéntame un poco sobre tu proyecto y te ayudo a ver si encajamos bien.',
-  'Agencia de marketing digital especializada en captación y calificación de leads con inteligencia artificial.',
-  'Marketing digital, generación de leads, automatización con IA, gestión de campañas publicitarias.',
+  'Asistente virtual',
+  '¡Hola! 👋 Gracias por escribir. Cuéntame en qué puedo ayudarte y con gusto te oriento.',
+  'Negocio digital que ofrece contenido, cursos o productos y servicios a través de internet.',
+  'Productos, servicios o contenido digital ofrecidos a través de internet.',
   'professional',
   'Español',
   array[
     'Nombre y correo electrónico de contacto',
-    'Tipo de negocio o industria',
-    'Servicio de interés',
+    'Qué te interesa (producto, servicio o curso)',
     'Presupuesto aproximado',
-    'Plazo estimado para arrancar'
+    'Cuándo te gustaría empezar'
   ],
   '[
-    {"id":"00000000-0000-0000-0000-000000000301","label":"Tiene un presupuesto definido","points":30},
-    {"id":"00000000-0000-0000-0000-000000000302","label":"La necesidad es clara y específica","points":30},
-    {"id":"00000000-0000-0000-0000-000000000303","label":"Plazo de arranque próximo (menos de 3 meses)","points":20},
-    {"id":"00000000-0000-0000-0000-000000000304","label":"Tiene autoridad para decidir la contratación","points":20}
+    {"id":"00000000-0000-0000-0000-000000000301","label":"Tiene una necesidad o interés claro","points":30},
+    {"id":"00000000-0000-0000-0000-000000000302","label":"Cuenta con presupuesto disponible","points":30},
+    {"id":"00000000-0000-0000-0000-000000000303","label":"Quiere avanzar pronto (menos de 1 mes)","points":20},
+    {"id":"00000000-0000-0000-0000-000000000304","label":"Puede tomar la decisión por sí mismo/a","points":20}
   ]'::jsonb,
   70,
   '',

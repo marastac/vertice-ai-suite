@@ -1,10 +1,12 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AppShell } from './layout/AppShell'
 import { ProtectedRoute } from './layout/ProtectedRoute'
+import { OnboardingGate } from './layout/OnboardingGate'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { RegisterPage } from '@/features/auth/RegisterPage'
 import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
+import { OnboardingPage } from '@/features/onboarding/OnboardingPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { LeadsPage } from '@/features/leads/LeadsPage'
 import { LeadDetailPage } from '@/features/leads/LeadDetailPage'
@@ -46,10 +48,20 @@ export const router = createBrowserRouter([
     element: <ResetPasswordPage />,
   },
   {
+    path: '/onboarding',
+    element: (
+      <ProtectedRoute>
+        <OnboardingPage />
+      </ProtectedRoute>
+    ),
+  },
+  {
     path: '/',
     element: (
       <ProtectedRoute>
-        <AppShell />
+        <OnboardingGate>
+          <AppShell />
+        </OnboardingGate>
       </ProtectedRoute>
     ),
     children: [

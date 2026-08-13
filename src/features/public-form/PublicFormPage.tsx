@@ -80,7 +80,7 @@ export function PublicFormPage() {
             <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
               <h1 className="text-lg font-semibold text-white">Este formulario no está disponible</h1>
               <p className="max-w-sm text-sm text-slate-400">
-                El formulario que buscas no existe o ya no está activo. Ponte en contacto con la agencia que te lo envió.
+                El formulario que buscas no existe o ya no está activo. Ponte en contacto con quien te compartió este enlace.
               </p>
             </CardContent>
           </Card>

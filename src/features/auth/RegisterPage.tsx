@@ -65,7 +65,7 @@ export function RegisterPage() {
   return (
     <AuthLayout
       title="Crea tu cuenta"
-      description="Empieza a calificar leads con Lead AI"
+      description="Ideal para creadores de contenido, cursos online y negocios que venden por internet"
       footer={
         <span className="text-slate-400">
           ¿Ya tienes cuenta?{' '}

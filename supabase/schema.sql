@@ -1,10 +1,18 @@
--- Lead AI — schema (Phase 6 persistence + Phase 8 multi-tenancy)
+-- Lead AI — schema (Phase 6 persistence + Phase 8 multi-tenancy + Phase 9 onboarding)
 --
 -- Run this once in the Supabase project's SQL editor (Project → SQL Editor →
 -- New query → paste → Run). Meant for a FRESH project. If your project
 -- already has Phase 6/7 data in it, do NOT run this file — run
--- supabase/migrations-phase8.sql instead, which backfills organization_id
--- onto existing rows non-destructively. This file assumes empty tables.
+-- supabase/migrations-phase8.sql then supabase/migrations-phase9.sql instead,
+-- which backfill non-destructively. This file assumes empty tables.
+--
+-- ── Phase 9: onboarding ──────────────────────────────────────────────────
+-- `organizations.business_type`/`onboarding_completed_at` (below) drive a
+-- one-time setup screen (`/onboarding`) for brand-new organizations only —
+-- see CLAUDE.md's "Phase 9: Onboarding & copy" section. No RLS policy
+-- changes were needed for this: the existing `organizations_update_members`
+-- policy (`is_org_member`) already lets a member set these two columns on
+-- their own organization.
 --
 -- ── Phase 8: multi-tenancy, read this first ─────────────────────────────
 -- Every table below now belongs to an `organizations` row via
@@ -40,6 +48,11 @@ create table if not exists organizations (
   name text not null,
   slug text not null unique,
   created_by uuid,
+  -- Phase 9: nullable on purpose. NULL business_type means "not chosen yet";
+  -- NULL onboarding_completed_at means "show /onboarding on next login" —
+  -- see entities/organization/OrganizationProvider.tsx's OnboardingGate.
+  business_type text check (business_type in ('content_creator', 'course_creator', 'online_business')),
+  onboarding_completed_at timestamptz,
   created_at timestamptz not null default now()
 );
 

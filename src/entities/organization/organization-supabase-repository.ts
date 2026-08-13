@@ -1,10 +1,18 @@
 import { supabase } from '@/shared/lib/supabase-client'
 import type { CreateInviteInput, OrganizationRepository } from './organization-repository'
-import type { Organization, OrganizationInvite, OrganizationRole } from './types'
+import type { BusinessType, Organization, OrganizationInvite, OrganizationRole } from './types'
+
+interface OrganizationRow {
+  id: string
+  name: string
+  slug: string
+  business_type: BusinessType | null
+  onboarding_completed_at: string | null
+}
 
 interface MembershipRow {
   role: OrganizationRole
-  organizations: { id: string; name: string; slug: string } | { id: string; name: string; slug: string }[]
+  organizations: OrganizationRow | OrganizationRow[]
 }
 
 interface InviteRow {
@@ -22,7 +30,13 @@ function normalizeOrganization(value: MembershipRow['organizations']): Organizat
   // relationship, but its generated types are conservative and allow an
   // array shape too — normalize defensively rather than assuming one.
   const row = Array.isArray(value) ? value[0] : value
-  return { id: row.id, name: row.name, slug: row.slug }
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    businessType: row.business_type ?? undefined,
+    onboardingCompletedAt: row.onboarding_completed_at ?? undefined,
+  }
 }
 
 function inviteFromRow(row: InviteRow): OrganizationInvite {
@@ -62,7 +76,7 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
   async listMyMemberships(userId) {
     const { data, error } = await supabase
       .from('organization_members')
-      .select('role, organizations(id, name, slug)')
+      .select('role, organizations(id, name, slug, business_type, onboarding_completed_at)')
       .eq('user_id', userId)
       .order('created_at', { ascending: true })
     if (error) throw error
@@ -125,5 +139,16 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
   async revokeInvite(inviteId) {
     const { error } = await supabase.from('organization_invites').update({ status: 'revoked' }).eq('id', inviteId)
     if (error) throw error
+  },
+
+  async completeOnboarding(organizationId, businessType) {
+    const { data, error } = await supabase
+      .from('organizations')
+      .update({ business_type: businessType, onboarding_completed_at: new Date().toISOString() })
+      .eq('id', organizationId)
+      .select('id, name, slug, business_type, onboarding_completed_at')
+      .single()
+    if (error) throw error
+    return normalizeOrganization(data as OrganizationRow)
   },
 }

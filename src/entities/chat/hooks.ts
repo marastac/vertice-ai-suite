@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOrganization } from '@/entities/organization'
 import { activeChatConfigRepository } from './active-chat-config-repository'
+import { activeChatSessionRepository } from './active-chat-session-repository'
 import { checkBackendHealth } from './api-client'
-import { localStorageChatSessionRepository } from './chat-session-repository'
 import type { ChatConfiguration } from './types'
 
 export const chatConfigKeys = {
@@ -54,26 +54,25 @@ export function useResetChatConfigMutation() {
 
 export const chatSessionKeys = {
   all: ['chat-sessions'] as const,
-  list: (orgSlug: string | undefined) => [...chatSessionKeys.all, 'list', orgSlug] as const,
+  list: (organizationId: string | undefined) => [...chatSessionKeys.all, 'list', organizationId] as const,
+  byId: (organizationId: string | undefined, id: string | undefined) =>
+    [...chatSessionKeys.all, 'byId', organizationId, id] as const,
 }
 
 /**
- * Chat sessions still live only in this browser's localStorage (see
- * CLAUDE.md's "Phase 8" section for why they weren't moved to Postgres this
- * phase) — filtering by the active organization's slug here is about
- * display hygiene (a browser used to test more than one organization's
- * public chat shouldn't blend their conversations together in
- * /conversations), not security isolation, since this data was never
- * shared across browsers/users to begin with.
+ * Chat sessions/messages are organization-scoped rows in Postgres (see
+ * supabase/schema.sql's chat_sessions/chat_messages) — a real cross-device
+ * listing, not a per-browser localStorage mirror. organizationId is
+ * injected here the same way every other entity's hooks do it (see
+ * entities/lead/hooks.ts), so this always reflects the signed-in member's
+ * own organization, enforced again server-side by chat_sessions_select's
+ * is_org_member RLS policy.
  */
 export function useChatSessionsQuery() {
   const { organization } = useOrganization()
   return useQuery({
-    queryKey: chatSessionKeys.list(organization?.slug),
-    queryFn: async () => {
-      const sessions = await localStorageChatSessionRepository.list()
-      return sessions.filter((session) => session.orgSlug === organization?.slug)
-    },
+    queryKey: chatSessionKeys.list(organization?.id),
+    queryFn: () => activeChatSessionRepository.list(organization!.id),
     enabled: Boolean(organization),
   })
 }
@@ -88,10 +87,10 @@ export function useBackendHealthQuery() {
 }
 
 export function useChatSessionQuery(id: string | undefined) {
+  const { organization } = useOrganization()
   return useQuery({
-    queryKey: [...chatSessionKeys.all, 'byId', id],
-    queryFn: () => localStorageChatSessionRepository.list(),
-    enabled: Boolean(id),
-    select: (sessions) => sessions.find((session) => session.id === id),
+    queryKey: chatSessionKeys.byId(organization?.id, id),
+    queryFn: () => activeChatSessionRepository.get(organization!.id, id!),
+    enabled: Boolean(organization && id),
   })
 }

@@ -5,8 +5,8 @@ import { AlertTriangle, Loader2, ShieldCheck, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/shared/ui/Card'
 import { Button } from '@/shared/ui/Button'
 import {
+  activeChatSessionRepository,
   createRemoteChatSession,
-  localStorageChatSessionRepository,
   streamChatMessage,
   syncLeadFromQualification,
   useBackendHealthQuery,
@@ -77,8 +77,9 @@ export function PublicChatPage() {
 
     try {
       const result = await createRemoteChatSession(orgSlug, config)
-      await localStorageChatSessionRepository.create({
+      await activeChatSessionRepository.create({
         id: result.sessionId,
+        organizationId,
         orgSlug,
         assistantName: result.assistantName,
         welcomeMessage: result.welcomeMessage,
@@ -110,7 +111,7 @@ export function PublicChatPage() {
 
   async function handleQualification(currentSessionId: string, qualification: ChatQualificationResult | null) {
     if (!qualification || !organizationId) return
-    await localStorageChatSessionRepository.setQualification(currentSessionId, qualification)
+    await activeChatSessionRepository.setQualification(currentSessionId, qualification)
     await syncLeadFromQualification(organizationId, currentSessionId, qualification)
   }
 
@@ -122,7 +123,7 @@ export function PublicChatPage() {
 
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: text, createdAt: new Date().toISOString() }
     setMessages((prev) => [...prev, userMessage])
-    await localStorageChatSessionRepository.appendMessage(sessionId, userMessage)
+    await activeChatSessionRepository.appendMessage(sessionId, userMessage)
 
     const assistantMessageId = crypto.randomUUID()
     setMessages((prev) => [
@@ -155,7 +156,7 @@ export function PublicChatPage() {
     setIsStreaming(false)
 
     if (assistantText.trim()) {
-      await localStorageChatSessionRepository.appendMessage(sessionId, {
+      await activeChatSessionRepository.appendMessage(sessionId, {
         id: assistantMessageId,
         role: 'assistant',
         content: assistantText,
@@ -191,7 +192,7 @@ export function PublicChatPage() {
       <ChatShell>
         <MessagePanel
           title="Este chat no está disponible"
-          description="El enlace que buscas no existe. Ponte en contacto con la agencia que te lo envió."
+          description="El enlace que buscas no existe. Ponte en contacto con quien te compartió este enlace."
         />
       </ChatShell>
     )
@@ -202,7 +203,7 @@ export function PublicChatPage() {
       <ChatShell>
         <MessagePanel
           title="Este chat no está activo en este momento"
-          description="La agencia todavía no ha activado el chat con IA. Vuelve a intentarlo más tarde."
+          description="Todavía no se ha activado el chat con IA. Vuelve a intentarlo más tarde."
         />
       </ChatShell>
     )
@@ -296,7 +297,7 @@ export function PublicChatPage() {
         <ChatComposer disabled={isStreaming} onSend={sendMessage} />
         <p className="flex items-center justify-center gap-1.5 px-4 pb-4 text-center text-[11px] text-slate-500">
           <ShieldCheck className="size-3.5 shrink-0" />
-          Esta conversación puede ser compartida con el equipo de la agencia para dar seguimiento a tu solicitud. No
+          Esta conversación puede ser compartida con el equipo detrás de este chat para dar seguimiento a tu solicitud. No
           compartas información sensible que no quieras que se almacene.
         </p>
       </div>

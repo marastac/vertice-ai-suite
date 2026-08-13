@@ -5,18 +5,29 @@ const STORAGE_KEY = 'lead-ai:chat-sessions:v1'
 
 export interface CreateChatSessionInput {
   id: string
+  organizationId: string
   orgSlug: string
   assistantName: string
   welcomeMessage: string
 }
 
 export interface ChatSessionRepository {
-  list(): Promise<ChatSession[]>
-  get(id: string): Promise<ChatSession | undefined>
+  list(organizationId: string): Promise<ChatSession[]>
+  get(organizationId: string, id: string): Promise<ChatSession | undefined>
   create(input: CreateChatSessionInput): Promise<ChatSession>
-  appendMessage(id: string, message: ChatMessage): Promise<ChatSession | undefined>
-  setQualification(id: string, qualification: ChatQualificationResult): Promise<ChatSession | undefined>
-  linkLead(id: string, leadId: string): Promise<ChatSession | undefined>
+  /**
+   * appendMessage/setQualification/linkLead are keyed by `id` alone (no
+   * organizationId) — on the Supabase backend, each is a SECURITY DEFINER
+   * RPC that derives/validates organization ownership itself server-side
+   * (see supabase/schema.sql's append_chat_message/set_chat_session_qualification/
+   * link_chat_session_lead). None of their return values are used by any
+   * caller today (PublicChatPage/qualification-service.ts always await and
+   * discard them), so they return void rather than reconstructing a partial
+   * ChatSession.
+   */
+  appendMessage(id: string, message: ChatMessage): Promise<void>
+  setQualification(id: string, qualification: ChatQualificationResult): Promise<void>
+  linkLead(id: string, leadId: string): Promise<void>
 }
 
 function readSessions(): ChatSession[] {
@@ -39,18 +50,19 @@ function updateSession(id: string, patch: (session: ChatSession) => ChatSession)
 }
 
 export const localStorageChatSessionRepository: ChatSessionRepository = {
-  async list() {
-    return readSessions()
+  async list(organizationId) {
+    return readSessions().filter((session) => session.organizationId === organizationId)
   },
 
-  async get(id) {
-    return readSessions().find((session) => session.id === id)
+  async get(organizationId, id) {
+    return readSessions().find((session) => session.id === id && session.organizationId === organizationId)
   },
 
   async create(input) {
     const now = new Date().toISOString()
     const session: ChatSession = {
       id: input.id,
+      organizationId: input.organizationId,
       orgSlug: input.orgSlug,
       assistantName: input.assistantName,
       createdAt: now,
@@ -62,7 +74,7 @@ export const localStorageChatSessionRepository: ChatSessionRepository = {
   },
 
   async appendMessage(id, message) {
-    return updateSession(id, (session) => ({
+    updateSession(id, (session) => ({
       ...session,
       messages: [...session.messages, message],
       updatedAt: new Date().toISOString(),
@@ -70,10 +82,10 @@ export const localStorageChatSessionRepository: ChatSessionRepository = {
   },
 
   async setQualification(id, qualification) {
-    return updateSession(id, (session) => ({ ...session, qualification, updatedAt: new Date().toISOString() }))
+    updateSession(id, (session) => ({ ...session, qualification, updatedAt: new Date().toISOString() }))
   },
 
   async linkLead(id, leadId) {
-    return updateSession(id, (session) => ({ ...session, leadId, updatedAt: new Date().toISOString() }))
+    updateSession(id, (session) => ({ ...session, leadId, updatedAt: new Date().toISOString() }))
   },
 }

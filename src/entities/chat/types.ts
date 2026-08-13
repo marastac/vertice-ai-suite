@@ -54,6 +54,7 @@ export interface ChatQualificationResult {
 
 export interface ChatSession {
   id: string
+  organizationId: string
   orgSlug: string
   assistantName: string
   createdAt: string

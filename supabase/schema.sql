@@ -380,28 +380,259 @@ create policy "chat_configuration_insert" on chat_configuration for insert with 
 create policy "chat_configuration_update" on chat_configuration for update using (is_org_member(organization_id));
 create policy "chat_configuration_delete" on chat_configuration for delete using (is_org_member(organization_id));
 
--- ── Chat sessions/messages — DESIGN ONLY, NOT CREATED ───────────────────
--- Phase 5 already hardened server/data/sessions.json end-to-end (verified
--- restart-survival). There is no requirement to move it this phase, and
--- doing so now would add risk with no immediate benefit. Chat sessions
--- already carry an orgSlug field client-side (entities/chat/types.ts's
--- ChatSession) — that's enough for Phase 8's purposes since this data is
--- browser-local storage, not a shared database; "isolation" doesn't apply
--- to data that's already structurally unreachable by anyone else. Left here
--- only so the shape is on record if a later phase decides to migrate:
+-- ── chat_sessions / chat_messages ────────────────────────────────────────
+-- The "display copy" of a public chat conversation (/c/:orgSlug), moved out
+-- of browser localStorage (see entities/chat/chat-session-repository.ts's
+-- history) because a per-browser store meant an anonymous visitor's
+-- conversation was only ever visible in the browser that ran it —
+-- /conversations (an authenticated, cross-device dashboard page) could never
+-- see it. Unrelated to server/data/sessions.json, which stays exactly as-is:
+-- that file is the backend's own store of conversation history sent to
+-- Claude, never read by the frontend directly.
 --
--- create table chat_sessions (
---   id uuid primary key default gen_random_uuid(),
---   organization_id uuid not null references organizations(id) on delete cascade,
---   config jsonb not null,
---   qualification jsonb,
---   created_at timestamptz not null default now(),
---   updated_at timestamptz not null default now()
--- );
--- create table chat_messages (
---   id uuid primary key default gen_random_uuid(),
---   session_id uuid not null references chat_sessions(id) on delete cascade,
---   role text not null check (role in ('user', 'assistant')),
---   content text not null,
---   created_at timestamptz not null default now()
--- );
+-- Unlike every other public-write table in this file (leads, form_submissions,
+-- lead_activity — all `insert with check (true)`), these two tables have NO
+-- insert/update policy for ANY role, anon or authenticated. Every write goes
+-- through one of the four SECURITY DEFINER functions below, each with its
+-- own explicit, narrow validation (see each function's comment). This is a
+-- deliberately stricter pattern than the rest of the file: a chat transcript
+-- is PII, so RLS never grants a public SELECT here either (contrast with
+-- forms/chat_configuration's public read for their own no-login pages).
+--
+-- chat_sessions.id deliberately has NO default — it's always the same UUID
+-- the Express backend already minted in createSession() (see
+-- server/src/repositories/session-repository.ts) and returned to the
+-- frontend as `sessionId`, so leads.chat_session_id keeps referring to the
+-- same conversation across both stores.
+create table if not exists chat_sessions (
+  id uuid primary key,
+  organization_id uuid not null references organizations(id) on delete cascade,
+  org_slug text not null,
+  assistant_name text not null,
+  qualification jsonb,
+  lead_id uuid references leads(id) on delete set null, -- safe FK: the lead already exists by the time a session links to it
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table chat_sessions enable row level security;
+drop policy if exists "chat_sessions_select" on chat_sessions;
+drop policy if exists "chat_sessions_delete" on chat_sessions;
+create policy "chat_sessions_select" on chat_sessions for select using (is_org_member(organization_id));
+create policy "chat_sessions_delete" on chat_sessions for delete using (is_org_member(organization_id));
+
+-- Normalized, not a jsonb array on chat_sessions — same append-only
+-- reasoning as lead_activity above.
+create table if not exists chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade, -- denormalized from chat_sessions.organization_id, same reasoning as lead_activity.organization_id
+  session_id uuid not null references chat_sessions(id) on delete cascade,
+  role text not null check (role in ('user', 'assistant')),
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists chat_messages_session_id_created_at_idx on chat_messages (session_id, created_at);
+
+alter table chat_messages enable row level security;
+drop policy if exists "chat_messages_select" on chat_messages;
+drop policy if exists "chat_messages_delete" on chat_messages;
+create policy "chat_messages_select" on chat_messages for select using (is_org_member(organization_id));
+create policy "chat_messages_delete" on chat_messages for delete using (is_org_member(organization_id));
+
+-- ── RPC: create_public_chat_session ──────────────────────────────────────
+-- The only way an anonymous visitor can create a chat_sessions row.
+-- organization_id/org_slug are cross-validated against the SAME
+-- organizations row (not checked independently) and chat_configuration.is_active
+-- is re-verified server-side rather than trusted from the client. The row
+-- actually inserted uses v_org_id (the validated result), never the raw
+-- p_organization_id parameter. assistant_name/welcome_message are read from
+-- chat_configuration here, not accepted as parameters — the client never
+-- gets to choose what gets stored for either.
+create or replace function public.create_public_chat_session(
+  p_session_id uuid,
+  p_organization_id uuid,
+  p_org_slug text
+)
+returns chat_sessions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_org_id uuid;
+  v_assistant_name text;
+  v_welcome_message text;
+  v_is_active boolean;
+  v_session chat_sessions;
+begin
+  if p_session_id is null then
+    raise exception 'p_session_id is required';
+  end if;
+  if p_organization_id is null or p_org_slug is null then
+    raise exception 'p_organization_id and p_org_slug are required';
+  end if;
+
+  select o.id, cc.assistant_name, cc.welcome_message, cc.is_active
+    into v_org_id, v_assistant_name, v_welcome_message, v_is_active
+  from organizations o
+  join chat_configuration cc on cc.organization_id = o.id
+  where o.id = p_organization_id and o.slug = p_org_slug;
+
+  if v_org_id is null then
+    raise exception 'La organización o el enlace del chat no son válidos.';
+  end if;
+  if v_is_active is distinct from true then
+    raise exception 'El chat público de esta organización no está activo.';
+  end if;
+
+  insert into chat_sessions (id, organization_id, org_slug, assistant_name)
+  values (p_session_id, v_org_id, p_org_slug, v_assistant_name)
+  returning * into v_session;
+
+  insert into chat_messages (organization_id, session_id, role, content)
+  values (v_org_id, p_session_id, 'assistant', v_welcome_message);
+
+  return v_session;
+end;
+$$;
+
+revoke all on function public.create_public_chat_session(uuid, uuid, text) from public;
+revoke all on function public.create_public_chat_session(uuid, uuid, text) from anon, authenticated;
+grant execute on function public.create_public_chat_session(uuid, uuid, text) to anon, authenticated;
+
+-- ── RPC: append_chat_message ─────────────────────────────────────────────
+-- The only way to insert into chat_messages for an anonymous visitor.
+-- organization_id is never a parameter here — it's always derived from the
+-- chat_sessions row found by p_session_id, so a caller can never write a
+-- message tagged with a different organization than its own session's.
+create or replace function public.append_chat_message(
+  p_session_id uuid,
+  p_role text,
+  p_content text
+)
+returns chat_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_organization_id uuid;
+  v_message chat_messages;
+begin
+  if p_session_id is null then
+    raise exception 'p_session_id is required';
+  end if;
+  if p_role not in ('user', 'assistant') then
+    raise exception 'p_role must be ''user'' or ''assistant''';
+  end if;
+  if p_content is null or length(trim(p_content)) = 0 then
+    raise exception 'p_content is required';
+  end if;
+
+  select cs.organization_id into v_organization_id
+  from chat_sessions cs
+  join organizations o on o.id = cs.organization_id
+  where cs.id = p_session_id;
+
+  if v_organization_id is null then
+    raise exception 'La sesión de chat indicada no existe.';
+  end if;
+
+  insert into chat_messages (organization_id, session_id, role, content)
+  values (v_organization_id, p_session_id, p_role, p_content)
+  returning * into v_message;
+
+  update chat_sessions set updated_at = now() where id = p_session_id;
+
+  return v_message;
+end;
+$$;
+
+revoke all on function public.append_chat_message(uuid, text, text) from public;
+revoke all on function public.append_chat_message(uuid, text, text) from anon, authenticated;
+grant execute on function public.append_chat_message(uuid, text, text) to anon, authenticated;
+
+-- ── RPC: set_chat_session_qualification ──────────────────────────────────
+-- Single-row UPDATE keyed only by p_session_id (the server-minted UUID) —
+-- no other filter is client-controllable.
+create or replace function public.set_chat_session_qualification(
+  p_session_id uuid,
+  p_qualification jsonb
+)
+returns chat_sessions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_session chat_sessions;
+begin
+  if p_session_id is null then
+    raise exception 'p_session_id is required';
+  end if;
+
+  update chat_sessions
+  set qualification = p_qualification, updated_at = now()
+  where id = p_session_id
+  returning * into v_session;
+
+  if v_session.id is null then
+    raise exception 'La sesión de chat indicada no existe.';
+  end if;
+
+  return v_session;
+end;
+$$;
+
+revoke all on function public.set_chat_session_qualification(uuid, jsonb) from public;
+revoke all on function public.set_chat_session_qualification(uuid, jsonb) from anon, authenticated;
+grant execute on function public.set_chat_session_qualification(uuid, jsonb) to anon, authenticated;
+
+-- ── RPC: link_chat_session_lead ───────────────────────────────────────────
+-- Verifies the lead exists AND belongs to the SAME organization as the
+-- session before linking — a session can never be linked to another
+-- organization's lead.
+create or replace function public.link_chat_session_lead(
+  p_session_id uuid,
+  p_lead_id uuid
+)
+returns chat_sessions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_organization_id uuid;
+  v_session chat_sessions;
+begin
+  if p_session_id is null then
+    raise exception 'p_session_id is required';
+  end if;
+  if p_lead_id is null then
+    raise exception 'p_lead_id is required';
+  end if;
+
+  select organization_id into v_organization_id from chat_sessions where id = p_session_id;
+  if v_organization_id is null then
+    raise exception 'La sesión de chat indicada no existe.';
+  end if;
+
+  if not exists (
+    select 1 from leads where id = p_lead_id and organization_id = v_organization_id
+  ) then
+    raise exception 'El lead indicado no existe o pertenece a otra organización.';
+  end if;
+
+  update chat_sessions
+  set lead_id = p_lead_id, updated_at = now()
+  where id = p_session_id
+  returning * into v_session;
+
+  return v_session;
+end;
+$$;
+
+revoke all on function public.link_chat_session_lead(uuid, uuid) from public;
+revoke all on function public.link_chat_session_lead(uuid, uuid) from anon, authenticated;
+grant execute on function public.link_chat_session_lead(uuid, uuid) to anon, authenticated;

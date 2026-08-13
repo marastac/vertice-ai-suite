@@ -1,5 +1,5 @@
 import { activeLeadRepository } from '@/entities/lead'
-import { localStorageChatSessionRepository } from './chat-session-repository'
+import { activeChatSessionRepository } from './active-chat-session-repository'
 import type { ChatQualificationResult } from './types'
 
 /**
@@ -44,6 +44,6 @@ export async function syncLeadFromQualification(
   }
 
   const lead = await activeLeadRepository.upsertByChatSession(organizationId, sessionId, patch)
-  await localStorageChatSessionRepository.linkLead(sessionId, lead.id)
+  await activeChatSessionRepository.linkLead(sessionId, lead.id)
   return lead.id
 }

@@ -91,19 +91,35 @@ export const supabaseChatConfigRepository: ChatConfigRepository = {
   },
 
   async save(organizationId, config) {
+    // upsert, not update: this must not assume a row already exists — it's
+    // called directly (bypassing get()'s lazy-seed) by
+    // entities/organization/onboarding-service.ts right after a brand-new
+    // organization is created, when nothing has been inserted into
+    // chat_configuration for it yet. A plain UPDATE would match zero rows
+    // and silently no-op, and the follow-up fetchRow()'s .single() would
+    // then throw PostgREST's 406 "Cannot coerce the result to a single JSON
+    // object" — which is exactly the bug this comment is here to prevent
+    // regressing. onConflict targets the same organization_id unique
+    // constraint get() already relies on.
     const { error } = await supabase
       .from('chat_configuration')
-      .update({ ...toRow(config), organization_id: organizationId, updated_at: new Date().toISOString() })
-      .eq('organization_id', organizationId)
+      .upsert(
+        { ...toRow(config), organization_id: organizationId, updated_at: new Date().toISOString() },
+        { onConflict: 'organization_id' },
+      )
     if (error) throw error
     return fromRow(await fetchRow(organizationId))
   },
 
   async reset(organizationId) {
+    // upsert for the same reason as save() above — reset() must also work
+    // for an organization that has no chat_configuration row yet.
     const { error } = await supabase
       .from('chat_configuration')
-      .update({ ...toRow(createDefaultChatConfiguration(organizationId)), updated_at: new Date().toISOString() })
-      .eq('organization_id', organizationId)
+      .upsert(
+        { ...toRow(createDefaultChatConfiguration(organizationId)), organization_id: organizationId, updated_at: new Date().toISOString() },
+        { onConflict: 'organization_id' },
+      )
     if (error) throw error
     return fromRow(await fetchRow(organizationId))
   },

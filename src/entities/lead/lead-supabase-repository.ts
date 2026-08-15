@@ -32,6 +32,31 @@ interface LeadRow {
   lead_activity: LeadActivityRow[]
 }
 
+// Shape returned by the upsert_chat_lead() RPC (`returns leads`, see
+// supabase/schema.sql) — the plain `leads` table row, with no joined
+// lead_activity (that's the whole point: this RPC exists so an anonymous
+// caller never needs a SELECT-gated read to get its own row back).
+interface UpsertChatLeadRow {
+  id: string
+  organization_id: string
+  name: string
+  email: string
+  phone: string | null
+  company: string
+  position: string | null
+  source: Lead['source']
+  status: Lead['status']
+  score: number
+  estimated_budget: number | null
+  assigned_to: string | null
+  notes: string | null
+  form_id: string | null
+  submission_id: string | null
+  chat_session_id: string | null
+  created_at: string
+  last_activity_at: string
+}
+
 // Single query joins the related lead_activity rows as a nested array —
 // avoids an N+1 read per lead for the activity timeline.
 const LEAD_SELECT = '*, lead_activity(*)'
@@ -183,35 +208,62 @@ export const supabaseLeadRepository: LeadRepository = {
     if (error) throw error
   },
 
+  /**
+   * Calls the upsert_chat_lead() Postgres RPC (see supabase/schema.sql)
+   * instead of a plain PostgREST upsert + read-back. The public chat page
+   * (/c/:orgSlug) is an anonymous `anon`-role caller, and leads_select /
+   * lead_activity_select are gated by is_org_member(organization_id) —
+   * unconditionally false with no auth.uid() — so a plain upsert followed
+   * by a SELECT could never read back the row it had just written (the bug
+   * this RPC fixes). A client-generated id (the trick create() uses) isn't
+   * an option here: this is a real upsert, and a client-chosen id would
+   * clobber the existing row's primary key on a conflict-UPDATE. The RPC
+   * does the upsert, the lead_activity insert, and the read inside one
+   * `security definer` call server-side, and returns exactly the single row
+   * this call just wrote — it grants no broader read access than the
+   * anonymous caller already had via leads_insert/leads_update.
+   */
   async upsertByChatSession(organizationId, sessionId, input) {
-    // Best-effort read, used only to decide which activity message(s) to
-    // log — NOT what makes this race-free. Race-freedom comes from the
-    // upsert below, backed by the unique index on leads.chat_session_id
-    // (see supabase/schema.sql): whichever of two concurrent calls resolves
-    // second still lands on the same row via ON CONFLICT, so at most one
-    // lead ever exists per chat session even if this read is stale by the
-    // time the upsert runs. Worst case under an actual race is an imprecise
-    // activity log line, never a duplicate lead. chat_session_id is unique
-    // globally (not per-organization) — see schema.sql's note on why.
-    const existing = await supabaseLeadRepository.getByChatSessionId(organizationId, sessionId)
-
-    const row = buildRow(input)
-    row.chat_session_id = sessionId
-    row.last_activity_at = new Date().toISOString()
-
-    const { error } = await supabase.from('leads').upsert(row, { onConflict: 'chat_session_id' })
+    const { data, error } = await supabase.rpc('upsert_chat_lead', {
+      p_organization_id: organizationId,
+      p_chat_session_id: sessionId,
+      p_name: input.name,
+      p_email: input.email,
+      p_phone: input.phone ?? null,
+      p_company: input.company,
+      p_status: input.status,
+      p_score: input.score ?? 0,
+      p_notes: input.notes ?? null,
+    })
     if (error) throw error
 
-    const result = await supabaseLeadRepository.getByChatSessionId(organizationId, sessionId)
-    if (!result) throw new Error(`No se encontró el lead para la sesión de chat ${sessionId} tras el upsert.`)
-
-    if (existing) {
-      const resolveName = await createNameResolver(organizationId)
-      await insertActivity(organizationId, result.id, buildUpdateActivityMessages(existing, input, resolveName))
-    } else {
-      await insertActivity(organizationId, result.id, [buildCreateActivityMessage({ ...input, chatSessionId: sessionId })])
+    const row = data as UpsertChatLeadRow
+    return {
+      id: row.id,
+      organizationId: row.organization_id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone ?? undefined,
+      company: row.company,
+      position: row.position ?? undefined,
+      source: row.source,
+      status: row.status,
+      score: row.score,
+      estimatedBudget: row.estimated_budget ?? undefined,
+      assignedTo: row.assigned_to ?? undefined,
+      notes: row.notes ?? undefined,
+      createdAt: row.created_at,
+      lastActivityAt: row.last_activity_at,
+      // The RPC persists the correct lead_activity row server-side, but an
+      // anonymous caller still can't SELECT lead_activity back to hydrate a
+      // full history here. Safe: qualification-service.ts (the only caller
+      // of this method, on the anonymous public chat path) only reads
+      // `.id` off the result — no anonymous UI ever renders this object's
+      // activity list.
+      activity: [],
+      formId: row.form_id ?? undefined,
+      submissionId: row.submission_id ?? undefined,
+      chatSessionId: row.chat_session_id ?? undefined,
     }
-
-    return fetchById(organizationId, result.id)
   },
 }

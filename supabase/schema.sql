@@ -305,6 +305,93 @@ create policy "leads_delete" on leads for delete using (is_org_member(organizati
 -- exist yet at insert time. This is normal runtime behavior, not a one-time
 -- migration wrinkle — so the column stays a loose uuid, unenforced.
 
+-- ── RPC: upsert_chat_lead ────────────────────────────────────────────────
+-- Public chat (/c/:orgSlug) bug fix. entities/chat/qualification-service.ts
+-- ::syncLeadFromQualification() calls activeLeadRepository.upsertByChatSession(),
+-- which used to (1) upsert the lead row via PostgREST, then (2) SELECT it
+-- back — both to return it to the caller and to decide which activity
+-- message to log. Step 2 always failed for an anonymous chat visitor:
+-- leads_select/lead_activity_select are gated by is_org_member(organization_id),
+-- unconditionally false with no auth.uid(), so the visitor's own successful
+-- upsert could never be read back (PGRST116 "no rows"). This is the same
+-- class of bug the public FORM flow hit — but a real upsert can't use that
+-- fix's trick (mint an id client-side, skip the read-back): a client-chosen
+-- id would corrupt the existing row's primary key on a conflict-UPDATE.
+--
+-- This function does the upsert, the lead_activity insert, and the read,
+-- all inside ONE security definer call, so RLS is bypassed only for the
+-- exact single row this call just wrote — never an arbitrary id or list —
+-- and only for operations an anonymous caller was already allowed to
+-- perform directly (leads_insert is `with check (true)`; leads_update
+-- already permits an anonymous caller when chat_session_id is not null,
+-- which this function always sets; lead_activity_insert is already public).
+-- No new access is granted to anon; this only removes an impossible
+-- read-after-write step for a request the caller was already authorized to
+-- make. It does NOT expose a general-purpose leads SELECT — anon still has
+-- no way to list or fetch an arbitrary lead.
+create or replace function public.upsert_chat_lead(
+  p_organization_id uuid,
+  p_chat_session_id text,
+  p_name text,
+  p_email text,
+  p_phone text,
+  p_company text,
+  p_status text,
+  p_score integer,
+  p_notes text
+)
+returns leads
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_lead leads;
+  v_is_new boolean;
+begin
+  if p_organization_id is null then
+    raise exception 'p_organization_id is required';
+  end if;
+  if p_chat_session_id is null or length(trim(p_chat_session_id)) = 0 then
+    raise exception 'p_chat_session_id is required';
+  end if;
+
+  select not exists (select 1 from leads where chat_session_id = p_chat_session_id) into v_is_new;
+
+  insert into leads (
+    organization_id, name, email, phone, company, source, status, score, notes, chat_session_id, last_activity_at
+  )
+  values (
+    p_organization_id, p_name, p_email, p_phone, p_company, 'chat', p_status, p_score, p_notes, p_chat_session_id, now()
+  )
+  on conflict (chat_session_id) do update set
+    name = excluded.name,
+    email = excluded.email,
+    phone = excluded.phone,
+    company = excluded.company,
+    status = excluded.status,
+    score = excluded.score,
+    notes = excluded.notes,
+    last_activity_at = now()
+  returning * into v_lead;
+
+  insert into lead_activity (organization_id, lead_id, message)
+  values (
+    v_lead.organization_id,
+    v_lead.id,
+    case when v_is_new
+      then 'Lead creado automáticamente desde una conversación de chat con IA.'
+      else 'Información del lead actualizada.'
+    end
+  );
+
+  return v_lead;
+end;
+$$;
+
+revoke all on function public.upsert_chat_lead(uuid, text, text, text, text, text, text, integer, text) from public;
+grant execute on function public.upsert_chat_lead(uuid, text, text, text, text, text, text, integer, text) to anon, authenticated;
+
 -- ── form_submissions ─────────────────────────────────────────────────────
 create table if not exists form_submissions (
   id uuid primary key default gen_random_uuid(),

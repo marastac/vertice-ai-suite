@@ -46,26 +46,41 @@ export const supabaseSubmissionRepository: SubmissionRepository = {
     return data.map(fromRow)
   },
 
+  /**
+   * Deliberately never reads `form_submissions` back after inserting — same
+   * reasoning as entities/lead/lead-supabase-repository.ts::create(): this
+   * runs as an anonymous `anon`-role request from a public form submission,
+   * and form_submissions_select (is_org_member(organization_id)) is
+   * unconditionally false with no auth.uid(). id/submittedAt are minted
+   * client-side (by the caller, or here, if not supplied) and the returned
+   * FormSubmission is built from data we already have, never from a
+   * SELECT-gated round trip.
+   */
   async create(input) {
-    // A caller-supplied id/submittedAt matters: submission-service.ts mints
-    // the submission id up front and stamps it onto the Lead it creates
-    // FIRST, before this FormSubmission row exists — see leads.submission_id
-    // having no FK constraint in supabase/schema.sql for why. organization_id
-    // is denormalized from the parent form (see schema.sql) and supplied by
-    // the caller rather than looked up here, since submission-service.ts
-    // already has it from the form it just fetched.
+    const id = input.id ?? crypto.randomUUID()
+    const submittedAt = input.submittedAt ?? new Date().toISOString()
+
     const row: Record<string, unknown> = {
+      id,
       organization_id: input.organizationId,
       form_id: input.formId,
       answers: input.answers,
       score: input.score,
       lead_id: input.leadId ?? null,
+      submitted_at: submittedAt,
     }
-    if (input.id) row.id = input.id
-    if (input.submittedAt) row.submitted_at = input.submittedAt
 
-    const { data, error } = await supabase.from('form_submissions').insert(row).select('*').single()
+    const { error } = await supabase.from('form_submissions').insert(row)
     if (error) throw error
-    return fromRow(data)
+
+    return {
+      id,
+      organizationId: input.organizationId,
+      formId: input.formId,
+      answers: input.answers,
+      score: input.score,
+      leadId: input.leadId,
+      submittedAt,
+    }
   },
 }

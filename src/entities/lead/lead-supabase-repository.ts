@@ -124,12 +124,28 @@ async function createNameResolver(organizationId: string): Promise<(memberId: st
   return (memberId) => members.find((member) => member.id === memberId)?.name
 }
 
-async function insertActivity(organizationId: string, leadId: string, messages: string[]): Promise<void> {
-  if (messages.length === 0) return
-  const { error } = await supabase
-    .from('lead_activity')
-    .insert(messages.map((message) => ({ organization_id: organizationId, lead_id: leadId, message })))
+/**
+ * Inserts lead_activity rows and returns them as LeadActivityEntry[] built
+ * from what we just sent (client-generated id/created_at), rather than
+ * reading the rows back. Anonymous callers (a public form/chat submitter)
+ * can INSERT here (lead_activity_insert is `with check (true)`) but can
+ * never SELECT — see the doc comment on create() below for the full
+ * reasoning. Callers that already know they're authenticated (update()) are
+ * free to ignore the return value.
+ */
+async function insertActivity(organizationId: string, leadId: string, messages: string[]): Promise<LeadActivityEntry[]> {
+  if (messages.length === 0) return []
+  const now = new Date().toISOString()
+  const rows = messages.map((message) => ({
+    id: crypto.randomUUID(),
+    organization_id: organizationId,
+    lead_id: leadId,
+    message,
+    created_at: now,
+  }))
+  const { error } = await supabase.from('lead_activity').insert(rows)
   if (error) throw error
+  return rows.map((row) => ({ id: row.id, message: row.message, createdAt: row.created_at }))
 }
 
 async function fetchById(organizationId: string, id: string): Promise<Lead> {
@@ -176,15 +192,57 @@ export const supabaseLeadRepository: LeadRepository = {
     return data ? fromRow(data) : undefined
   },
 
+  /**
+   * Deliberately self-sufficient: never reads `leads` back after inserting.
+   * This is the path a public, no-login form submission (submission-service.ts)
+   * and public chat qualification both go through, as an anonymous
+   * `anon`-role request — and `leads_select` (see supabase/schema.sql) is
+   * `is_org_member(organization_id)`, which is unconditionally false for an
+   * anonymous caller (auth.uid() is null). Reading the row back after
+   * insert — even the very row we just wrote — would 0-row-fail under that
+   * policy. The fix is structural, not a policy weakening: mint id/timestamps
+   * client-side, insert them explicitly (Postgres allows overriding a
+   * column's DEFAULT by supplying an explicit value), and build the
+   * returned Lead purely from data we already have. leads_insert /
+   * lead_activity_insert stay `with check (true)` — anon can still only
+   * ever *write* a lead, never list/read one back; dashboard reads remain
+   * fully gated by is_org_member, unchanged.
+   */
   async create(input) {
-    const row = buildRow(input)
-    row.last_activity_at = new Date().toISOString()
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
 
-    const { data: inserted, error } = await supabase.from('leads').insert(row).select('id').single()
+    const row = buildRow(input)
+    row.id = id
+    row.created_at = now
+    row.last_activity_at = now
+
+    const { error } = await supabase.from('leads').insert(row)
     if (error) throw error
 
-    await insertActivity(input.organizationId, inserted.id, [buildCreateActivityMessage(input)])
-    return fetchById(input.organizationId, inserted.id)
+    const activity = await insertActivity(input.organizationId, id, [buildCreateActivityMessage(input)])
+
+    return {
+      id,
+      organizationId: input.organizationId,
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      company: input.company,
+      position: input.position,
+      source: input.source,
+      status: input.status,
+      score: input.score ?? 0,
+      estimatedBudget: input.estimatedBudget,
+      assignedTo: input.assignedTo,
+      notes: input.notes,
+      createdAt: now,
+      lastActivityAt: now,
+      activity,
+      formId: input.formId,
+      submissionId: input.submissionId,
+      chatSessionId: input.chatSessionId,
+    }
   },
 
   async update(organizationId, id, patch) {

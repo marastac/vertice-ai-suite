@@ -14,6 +14,35 @@ interface LocationState {
   from?: { pathname: string }
 }
 
+// Top-level segments actually registered under the AppShell tree in
+// router.tsx. ProtectedRoute stores whatever path a logged-out visit hit
+// into location.state.from, and this page redirects back there on
+// successful login — but that path was never validated against the real
+// route table. A stale/bogus from.pathname (a dead bookmark, a typo, a
+// browser-suggested URL — anything that isn't one of ours) would otherwise
+// send a freshly-logged-in user straight back to a 404, forever, since
+// nothing ever clears state.from. Falling back to /dashboard for anything
+// not on this list is what actually fixes that, regardless of how the bad
+// path got captured in the first place.
+const KNOWN_APP_PATH_PREFIXES = [
+  '/dashboard',
+  '/leads',
+  '/forms',
+  '/conversations',
+  '/chat-settings',
+  '/integrations',
+  '/team',
+  '/settings',
+  '/onboarding',
+]
+
+function resolveRedirectTarget(from: string | undefined): string {
+  if (from && KNOWN_APP_PATH_PREFIXES.some((prefix) => from === prefix || from.startsWith(`${prefix}/`))) {
+    return from
+  }
+  return '/dashboard'
+}
+
 export function LoginPage() {
   const { signIn, isSupabaseConfigured, user } = useAuth()
   const navigate = useNavigate()
@@ -31,8 +60,8 @@ export function LoginPage() {
   })
 
   if (user) {
-    const from = (location.state as LocationState | null)?.from?.pathname ?? '/dashboard'
-    return <Navigate to={from} replace />
+    const from = (location.state as LocationState | null)?.from?.pathname
+    return <Navigate to={resolveRedirectTarget(from)} replace />
   }
 
   const onSubmit = async (values: LoginValues) => {
@@ -44,8 +73,8 @@ export function LoginPage() {
       setSubmitError(error)
       return
     }
-    const from = (location.state as LocationState | null)?.from?.pathname ?? '/dashboard'
-    navigate(from, { replace: true })
+    const from = (location.state as LocationState | null)?.from?.pathname
+    navigate(resolveRedirectTarget(from), { replace: true })
   }
 
   return (

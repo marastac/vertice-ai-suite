@@ -1,10 +1,11 @@
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Percent, Star, Users } from 'lucide-react'
+import { ArrowLeft, Check, Copy, Link2, Percent, Star, Users } from 'lucide-react'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card, CardContent } from '@/shared/ui/Card'
 import { EmptyState } from '@/shared/ui/EmptyState'
 import { Button } from '@/shared/ui/Button'
-import { useFormQuery, useSubmissionsQuery } from '@/entities/form'
+import { getPublicFormUrl, useFormQuery, useSubmissionsQuery } from '@/entities/form'
 import { useLeadsQuery } from '@/entities/lead'
 import { FormSubmissionTable } from './components/FormSubmissionTable'
 
@@ -13,8 +14,16 @@ export function FormSubmissionsPage() {
   const { data: form, isLoading: isFormLoading } = useFormQuery(formId)
   const { data: submissions, isLoading: isSubmissionsLoading, isError, refetch } = useSubmissionsQuery(formId)
   const { data: leads } = useLeadsQuery()
+  const [copied, setCopied] = useState(false)
 
   const isLoading = isFormLoading || isSubmissionsLoading
+
+  async function handleCopyLink() {
+    if (!form || form.status !== 'active') return
+    await navigator.clipboard.writeText(getPublicFormUrl(form.id))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   if (isLoading) {
     return (
@@ -65,7 +74,23 @@ export function FormSubmissionsPage() {
         Volver a formularios
       </Link>
 
-      <PageHeader title={form.name} description="Resultados y envíos de este formulario." />
+      <PageHeader
+        title={form.name}
+        description="Resultados y envíos de este formulario."
+        actions={
+          form.status === 'active' ? (
+            <Button
+              variant="secondary"
+              leftIcon={copied ? <Check className="size-4 text-emerald-400" /> : <Link2 className="size-4" />}
+              onClick={handleCopyLink}
+            >
+              {copied ? 'Enlace copiado' : 'Copiar enlace público'}
+            </Button>
+          ) : (
+            <span className="text-xs text-slate-500">Activa el formulario para poder compartir su enlace público.</span>
+          )
+        }
+      />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
@@ -100,7 +125,28 @@ export function FormSubmissionsPage() {
       {total === 0 ? (
         <EmptyState
           title="Todavía no hay envíos"
-          description="Comparte el enlace público de este formulario para empezar a recibir respuestas."
+          description={
+            form.status === 'active'
+              ? 'Comparte el enlace público de este formulario para empezar a recibir respuestas.'
+              : 'Este formulario está en borrador. Actívalo desde "Formularios" para poder compartir su enlace público.'
+          }
+          action={
+            form.status === 'active' ? (
+              <div className="flex items-center gap-2">
+                <code className="rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-xs text-slate-300">
+                  {getPublicFormUrl(form.id)}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Copiar enlace público"
+                  onClick={handleCopyLink}
+                >
+                  {copied ? <Check className="size-4 text-emerald-400" /> : <Copy className="size-4" />}
+                </Button>
+              </div>
+            ) : undefined
+          }
         />
       ) : (
         <FormSubmissionTable submissions={list} leads={leads ?? []} />

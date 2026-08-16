@@ -22,6 +22,11 @@ export const questionTypeLabel: Record<QuestionType, string> = {
   yes_no: 'Sí / No',
 }
 
+/** The public, no-login submission URL for a form — see src/features/public-form/PublicFormPage.tsx (route /f/:formId). Only meaningful to share while the form's status is 'active'; PublicFormPage itself shows a "not available" message for a draft form, so callers should gate the share UI on status rather than relying on that fallback alone. */
+export function getPublicFormUrl(formId: string): string {
+  return `${window.location.origin}/f/${formId}`
+}
+
 const dateTimeFormatter = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium', timeStyle: 'short' })
 const dateFormatter = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium' })
 

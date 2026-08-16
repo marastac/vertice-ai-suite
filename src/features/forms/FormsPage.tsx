@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Copy, FileText, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Copy, ExternalLink, FileText, Link2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Button } from '@/shared/ui/Button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/Card'
@@ -8,6 +8,7 @@ import { EmptyState } from '@/shared/ui/EmptyState'
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog'
 import {
   formatFormDate,
+  getPublicFormUrl,
   useDeleteFormMutation,
   useDuplicateFormMutation,
   useFormsQuery,
@@ -23,9 +24,16 @@ export function FormsPage() {
   const setStatusMutation = useSetFormStatusMutation()
   const deleteMutation = useDeleteFormMutation()
   const [formToDelete, setFormToDelete] = useState<QualificationFormWithStats | null>(null)
+  const [copiedFormId, setCopiedFormId] = useState<string | null>(null)
 
   async function handleDuplicate(id: string) {
     await duplicateMutation.mutateAsync(id)
+  }
+
+  async function handleCopyLink(formId: string) {
+    await navigator.clipboard.writeText(getPublicFormUrl(formId))
+    setCopiedFormId(formId)
+    setTimeout(() => setCopiedFormId((current) => (current === formId ? null : current)), 2000)
   }
 
   async function handleToggleStatus(form: QualificationFormWithStats) {
@@ -117,6 +125,26 @@ export function FormsPage() {
                   >
                     Envíos
                   </Link>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Copiar enlace público"
+                    title={form.status === 'active' ? 'Copiar enlace público' : 'Activa el formulario para poder compartirlo'}
+                    disabled={form.status !== 'active'}
+                    onClick={() => handleCopyLink(form.id)}
+                  >
+                    {copiedFormId === form.id ? <Check className="size-4 text-emerald-400" /> : <Link2 className="size-4" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Ver formulario público"
+                    title={form.status === 'active' ? 'Ver formulario público' : 'Activa el formulario para poder compartirlo'}
+                    disabled={form.status !== 'active'}
+                    onClick={() => window.open(getPublicFormUrl(form.id), '_blank', 'noopener,noreferrer')}
+                  >
+                    <ExternalLink className="size-4" />
+                  </Button>
                   <Button variant="ghost" size="sm" aria-label="Duplicar formulario" onClick={() => handleDuplicate(form.id)}>
                     <Copy className="size-4" />
                   </Button>

@@ -7,6 +7,7 @@ import { RegisterPage } from '@/features/auth/RegisterPage'
 import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
 import { OnboardingPage } from '@/features/onboarding/OnboardingPage'
+import { AcceptInvitePage } from '@/features/accept-invite/AcceptInvitePage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { LeadsPage } from '@/features/leads/LeadsPage'
 import { LeadDetailPage } from '@/features/leads/LeadDetailPage'
@@ -30,6 +31,10 @@ export const router = createBrowserRouter([
   {
     path: '/c/:orgSlug',
     element: <PublicChatPage />,
+  },
+  {
+    path: '/accept-invite/:token',
+    element: <AcceptInvitePage />,
   },
   {
     path: '/login',

@@ -280,7 +280,7 @@ begin
 
   insert into organization_members (organization_id, user_id, role)
   values (v_invite.organization_id, auth.uid(), v_invite.role)
-  on conflict (organization_id, user_id) do nothing;
+  on conflict on constraint organization_members_organization_id_user_id_key do nothing;
 
   update organization_invites set status = 'accepted' where id = v_invite.id;
 

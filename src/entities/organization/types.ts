@@ -27,8 +27,25 @@ export interface OrganizationInvite {
   email: string
   role: OrganizationRole
   status: 'pending' | 'accepted' | 'revoked' | 'expired'
+  token: string
   createdAt: string
   expiresAt: string
+}
+
+/** Result of get_invite_by_token() — what the public /accept-invite page previews before the visitor is a member of anything. */
+export interface InvitePreview {
+  organizationName: string
+  organizationSlug: string
+  role: OrganizationRole
+  status: OrganizationInvite['status']
+  expiresAt: string
+  isUsable: boolean
+}
+
+/** Result of accept_invite() — enough to redirect the caller into their newly-joined organization. */
+export interface AcceptInviteResult {
+  organizationId: string
+  organizationSlug: string
 }
 
 /**

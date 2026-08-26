@@ -1,6 +1,14 @@
 import { readJSON, writeJSON } from '@/shared/lib/local-storage'
 import { LOCAL_ORGANIZATION_ID } from './types'
-import type { BusinessType, Organization, OrganizationInvite, OrganizationMembership, OrganizationRole } from './types'
+import type {
+  AcceptInviteResult,
+  BusinessType,
+  InvitePreview,
+  Organization,
+  OrganizationInvite,
+  OrganizationMembership,
+  OrganizationRole,
+} from './types'
 
 export interface CreateInviteInput {
   organizationId: string
@@ -16,6 +24,10 @@ export interface OrganizationRepository {
   createInvite(input: CreateInviteInput): Promise<OrganizationInvite>
   listInvites(organizationId: string): Promise<OrganizationInvite[]>
   revokeInvite(inviteId: string): Promise<void>
+  /** Public preview of an invite by its token — no organization membership required. Returns null if the token doesn't exist. */
+  getInviteByToken(token: string): Promise<InvitePreview | null>
+  /** Accepts an invite, joining the caller into its organization. Throws on AUTH_REQUIRED/INVITE_NOT_FOUND/INVITE_NOT_USABLE/EMAIL_MISMATCH — see supabase/schema.sql's accept_invite(). */
+  acceptInvite(token: string): Promise<AcceptInviteResult>
   /** Phase 9: records the chosen business type and marks onboarding done — see app/layout/OnboardingGate.tsx. */
   completeOnboarding(organizationId: string, businessType: BusinessType): Promise<Organization>
 }
@@ -64,6 +76,12 @@ export const localOrganizationRepository: OrganizationRepository = {
   },
   async revokeInvite() {
     // no-op — nothing to revoke in local mode
+  },
+  async getInviteByToken() {
+    throw new Error('Las invitaciones no están disponibles en modo local (VITE_DATA_BACKEND=local).')
+  },
+  async acceptInvite() {
+    throw new Error('Las invitaciones no están disponibles en modo local (VITE_DATA_BACKEND=local).')
   },
   async completeOnboarding(_organizationId, businessType) {
     const state: StoredOnboardingState = { businessType, onboardingCompletedAt: new Date().toISOString() }

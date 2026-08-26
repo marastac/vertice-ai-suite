@@ -1,6 +1,6 @@
 import { supabase } from '@/shared/lib/supabase-client'
 import type { CreateInviteInput, OrganizationRepository } from './organization-repository'
-import type { BusinessType, Organization, OrganizationInvite, OrganizationRole } from './types'
+import type { AcceptInviteResult, BusinessType, InvitePreview, Organization, OrganizationInvite, OrganizationRole } from './types'
 
 interface OrganizationRow {
   id: string
@@ -21,8 +21,25 @@ interface InviteRow {
   email: string
   role: OrganizationRole
   status: OrganizationInvite['status']
+  token: string
   created_at: string
   expires_at: string
+}
+
+// Shape returned by get_invite_by_token() — see supabase/schema.sql.
+interface InvitePreviewRow {
+  organization_name: string
+  organization_slug: string
+  role: OrganizationRole
+  status: OrganizationInvite['status']
+  expires_at: string
+  is_usable: boolean
+}
+
+// Shape returned by accept_invite() — see supabase/schema.sql.
+interface AcceptInviteRow {
+  organization_id: string
+  organization_slug: string
 }
 
 function normalizeOrganization(value: MembershipRow['organizations']): Organization {
@@ -46,6 +63,7 @@ function inviteFromRow(row: InviteRow): OrganizationInvite {
     email: row.email,
     role: row.role,
     status: row.status,
+    token: row.token,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   }
@@ -139,6 +157,28 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
   async revokeInvite(inviteId) {
     const { error } = await supabase.from('organization_invites').update({ status: 'revoked' }).eq('id', inviteId)
     if (error) throw error
+  },
+
+  async getInviteByToken(token): Promise<InvitePreview | null> {
+    const { data, error } = await supabase.rpc('get_invite_by_token', { p_token: token }).maybeSingle()
+    if (error) throw error
+    if (!data) return null
+    const row = data as InvitePreviewRow
+    return {
+      organizationName: row.organization_name,
+      organizationSlug: row.organization_slug,
+      role: row.role,
+      status: row.status,
+      expiresAt: row.expires_at,
+      isUsable: row.is_usable,
+    }
+  },
+
+  async acceptInvite(token): Promise<AcceptInviteResult> {
+    const { data, error } = await supabase.rpc('accept_invite', { p_token: token }).single()
+    if (error) throw error
+    const row = data as AcceptInviteRow
+    return { organizationId: row.organization_id, organizationSlug: row.organization_slug }
   },
 
   async completeOnboarding(organizationId, businessType) {

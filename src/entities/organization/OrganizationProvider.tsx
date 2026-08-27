@@ -6,6 +6,7 @@ import { dataBackend } from '@/shared/lib/data-backend'
 import { activeOrganizationRepository } from './active-organization-repository'
 import { completeOrganizationOnboarding } from './onboarding-service'
 import { OrganizationContext } from './organization-context'
+import { getPendingInviteToken } from './pending-invite-storage'
 import type { OrganizationContextValue } from './organization-context'
 import { LOCAL_ORGANIZATION_ID } from './types'
 import type { BusinessType, Organization, OrganizationMembership, OrganizationRole } from './types'
@@ -50,7 +51,16 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
       try {
         let myMemberships = await activeOrganizationRepository.listMyMemberships(user!.id)
 
-        if (myMemberships.length === 0) {
+        // Skip auto-provisioning while AcceptInvitePage has a fresh pending-invite
+        // marker set — this provider wraps the whole router (see App.tsx), so it
+        // can't tell which route the user is on; sessionStorage is the only signal
+        // available. Without this guard, a brand-new user arriving via an invite
+        // link would get a personal organization auto-created here before they
+        // ever reach accept_invite(), instead of joining the organization they
+        // were actually invited to. The marker expires after an hour (see
+        // pending-invite-storage.ts) so an abandoned flow doesn't permanently
+        // block a later, unrelated first login for the same user.
+        if (myMemberships.length === 0 && !getPendingInviteToken()) {
           // First login for this user: silently provision a personal
           // organization so they're never stuck on an empty dashboard —
           // confirmed with the product owner as the Phase 8 approach,

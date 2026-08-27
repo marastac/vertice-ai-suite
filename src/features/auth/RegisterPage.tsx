@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { AlertCircle, Lock, Mail, MailCheck, User } from 'lucide-react'
@@ -9,10 +9,13 @@ import { registerSchema, useAuth } from '@/entities/auth'
 import type { RegisterValues } from '@/entities/auth'
 import { AuthLayout } from './components/AuthLayout'
 import { SupabaseNotConfiguredNotice } from './components/SupabaseNotConfiguredNotice'
+import { resolveRedirectTarget } from './redirect-target'
+import type { AuthRedirectLocationState } from './redirect-target'
 
 export function RegisterPage() {
   const { signUp, isSupabaseConfigured, user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [confirmationSent, setConfirmationSent] = useState(false)
@@ -27,7 +30,8 @@ export function RegisterPage() {
   })
 
   if (user) {
-    return <Navigate to="/dashboard" replace />
+    const from = (location.state as AuthRedirectLocationState | null)?.from?.pathname
+    return <Navigate to={resolveRedirectTarget(from)} replace />
   }
 
   if (confirmationSent) {
@@ -59,7 +63,8 @@ export function RegisterPage() {
       setConfirmationSent(true)
       return
     }
-    navigate('/dashboard', { replace: true })
+    const from = (location.state as AuthRedirectLocationState | null)?.from?.pathname
+    navigate(resolveRedirectTarget(from), { replace: true })
   }
 
   return (

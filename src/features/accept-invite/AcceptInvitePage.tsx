@@ -8,6 +8,7 @@ import {
   clearPendingInviteToken,
   inviteStatusLabel,
   organizationRoleLabel,
+  setLastActiveOrganizationId,
   setPendingInviteToken,
   translateInviteError,
   useAcceptInviteMutation,
@@ -43,8 +44,12 @@ export function AcceptInvitePage() {
     if (!token) return
     setAcceptError(null)
     try {
-      await acceptMutation.mutateAsync(token)
+      const result = await acceptMutation.mutateAsync(token)
       clearPendingInviteToken()
+      // Without this, OrganizationProvider would default to the user's oldest
+      // membership (listMyMemberships is ordered by created_at ascending) on the
+      // reload below, not the organization they just joined.
+      setLastActiveOrganizationId(result.organizationId)
       // Hard redirect, not React Router navigation: forces OrganizationProvider
       // to remount and re-fetch memberships from scratch, now that accept_invite()
       // has created the organization_members row.

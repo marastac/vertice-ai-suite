@@ -4,6 +4,7 @@ import { useAuth } from '@/entities/auth'
 import { activeTeamMemberRepository } from '@/entities/team-member'
 import { dataBackend } from '@/shared/lib/data-backend'
 import { activeOrganizationRepository } from './active-organization-repository'
+import { getLastActiveOrganizationId, setLastActiveOrganizationId } from './active-organization-storage'
 import { completeOrganizationOnboarding } from './onboarding-service'
 import { OrganizationContext } from './organization-context'
 import { getPendingInviteToken } from './pending-invite-storage'
@@ -85,7 +86,19 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
 
         if (cancelled) return
         setMemberships(myMemberships)
-        setActiveOrganizationId((current) => current ?? myMemberships[0]?.organization.id ?? null)
+        setActiveOrganizationId((current) => {
+          if (current) return current
+          // Prefer the organization the user was last working in over the oldest
+          // membership — this is also what makes AcceptInvitePage's post-accept
+          // reload land on the just-joined organization rather than whichever one
+          // happens to be first by created_at. Falls back safely if the stored id
+          // isn't (or is no longer) one of this user's memberships.
+          const lastActiveId = getLastActiveOrganizationId()
+          if (lastActiveId && myMemberships.some((m) => m.organization.id === lastActiveId)) {
+            return lastActiveId
+          }
+          return myMemberships[0]?.organization.id ?? null
+        })
       } catch (err) {
         if (cancelled) return
         setError(err instanceof Error ? err.message : 'No se pudo cargar la organización.')
@@ -104,6 +117,7 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
     (organizationId: string) => {
       if (memberships.some((membership) => membership.organization.id === organizationId)) {
         setActiveOrganizationId(organizationId)
+        setLastActiveOrganizationId(organizationId)
       }
     },
     [memberships],

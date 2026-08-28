@@ -42,3 +42,13 @@ export const inviteStatusBadgeVariant: Record<OrganizationInvite['status'], Badg
   revoked: 'danger',
   expired: 'neutral',
 }
+
+export function getInviteUrl(token: string): string {
+  return `${window.location.origin}/accept-invite/${token}`
+}
+
+const inviteExpiresAtFormatter = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium' })
+
+export function formatInviteExpiresAt(iso: string): string {
+  return inviteExpiresAtFormatter.format(new Date(iso))
+}

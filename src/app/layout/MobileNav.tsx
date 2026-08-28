@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { Sparkles, X } from 'lucide-react'
 import { cn } from '@/shared/lib/cn'
 import { navItems } from './nav-config'
+import { OrganizationSwitcher } from './OrganizationSwitcher'
 
 interface MobileNavProps {
   isOpen: boolean
@@ -66,6 +67,10 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
             </NavLink>
           ))}
         </nav>
+
+        <div className="border-t border-slate-800/80 px-4 py-4">
+          <OrganizationSwitcher onSwitch={onClose} />
+        </div>
       </div>
     </div>
   )

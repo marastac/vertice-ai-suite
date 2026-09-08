@@ -13,3 +13,16 @@ import type { OrganizationRole } from './types'
 export function canManageInvites(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Fase 10: mirrors update_member_role()/remove_organization_member()'s own
+ * `is_org_admin` check (see supabase/schema.sql) — a member/viewer can't
+ * change anyone's role or remove them at the database level either way.
+ * Same value as canManageInvites today, but declared separately: these are
+ * conceptually distinct permissions (inviting vs. managing existing members)
+ * that happen to share a threshold now — don't collapse them into one name,
+ * or a future change to one would silently affect the other.
+ */
+export function canManageMembers(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}

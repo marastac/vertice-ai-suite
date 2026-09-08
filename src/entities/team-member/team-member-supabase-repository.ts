@@ -34,4 +34,21 @@ export const supabaseTeamMemberRepository: TeamMemberRepository = {
     if (error) throw error
     return fromRow(data)
   },
+
+  async updateRole(organizationId, teamMemberId, newRole) {
+    const { error } = await supabase.rpc('update_member_role', {
+      p_organization_id: organizationId,
+      p_team_member_id: teamMemberId,
+      p_new_role: newRole,
+    })
+    if (error) throw error
+  },
+
+  async removeMember(organizationId, teamMemberId) {
+    const { error } = await supabase.rpc('remove_organization_member', {
+      p_organization_id: organizationId,
+      p_team_member_id: teamMemberId,
+    })
+    if (error) throw error
+  },
 }

@@ -157,10 +157,31 @@ create policy "organization_members_insert_owner_bootstrap" on organization_memb
     and role = 'owner'
     and exists (select 1 from organizations o where o.id = organization_id and o.created_by = auth.uid())
   );
+-- Fase 10 — member management. Tightened beyond plain is_org_admin(organization_id)
+-- specifically because that alone does NOT check which row is being touched: an
+-- admin could otherwise UPDATE their own row to role='owner' (self-escalation),
+-- or UPDATE/DELETE the real owner's row, via a direct PostgREST call — neither
+-- requires going through any RPC. Both are blocked here, at the RLS layer,
+-- regardless of which client code path is used:
+--   - user_id <> auth.uid(): nobody can touch their own membership row through
+--     this policy (change_role/remove_member are admin-acting-on-someone-else
+--     operations only — self-service "leave the organization" is a deliberately
+--     separate, not-yet-built feature with different rules, see CLAUDE.md).
+--   - role <> 'owner' (USING): the owner's row can never be the target of an
+--     UPDATE or DELETE through this policy, by anyone, including another admin.
+--   - with check (role <> 'owner') on UPDATE: the *resulting* role can never be
+--     'owner' either — this is what stops "admin promotes X (or themselves) to
+--     owner". There is no ownership-transfer feature; the owner row is fixed
+--     for the organization's lifetime as far as this policy is concerned.
+-- update_member_role()/remove_organization_member() (further below) are the
+-- sanctioned application entry points and re-validate all of this themselves
+-- (SECURITY DEFINER bypasses RLS, so they can't rely on it) — this policy is
+-- the backstop for a direct, RPC-bypassing REST call attempting the same thing.
 create policy "organization_members_update_admins" on organization_members for update
-  using (is_org_admin(organization_id));
+  using (is_org_admin(organization_id) and user_id <> auth.uid() and role <> 'owner')
+  with check (role <> 'owner');
 create policy "organization_members_delete_admins" on organization_members for delete
-  using (is_org_admin(organization_id));
+  using (is_org_admin(organization_id) and user_id <> auth.uid() and role <> 'owner');
 
 alter table organization_invites enable row level security;
 drop policy if exists "organization_invites_select_admins" on organization_invites;
@@ -333,7 +354,7 @@ create unique index if not exists team_members_org_email_key on team_members (or
 -- 'viewer' was added after this table's first release — this ALTER is a no-op
 -- on a fresh install (the create table above already allows it) but widens an
 -- existing project's constraint when this file is re-run. Needed so
--- accept_invite() below can insert a team_members row for an invite that
+-- accept_invite() above can insert a team_members row for an invite that
 -- granted 'viewer', not just 'admin'/'member'.
 alter table team_members drop constraint if exists team_members_role_check;
 alter table team_members add constraint team_members_role_check check (role in ('owner', 'admin', 'member', 'viewer'));
@@ -343,10 +364,215 @@ drop policy if exists "team_members_select" on team_members;
 drop policy if exists "team_members_insert" on team_members;
 drop policy if exists "team_members_update" on team_members;
 drop policy if exists "team_members_delete" on team_members;
+-- SELECT stays is_org_member — everyone on the team can see the roster
+-- (matches /team's UI, which never gated the member list itself, only the
+-- invite/management actions). INSERT/UPDATE/DELETE were tightened to
+-- is_org_admin as part of Fase 10 (member management): this table is no
+-- longer just an assignable-name list a viewer could freely edit — since
+-- accept_invite() and the organization_members sync trigger keep it as a
+-- mirror of real membership, a non-admin editing/deleting a row here would
+-- corrupt that mirror (e.g. delete a real member's assignable-name row,
+-- silently unassigning their leads) even though it can't grant them real
+-- access on its own. The sync trigger itself runs SECURITY DEFINER and so
+-- bypasses these policies entirely — this only restricts direct client writes.
 create policy "team_members_select" on team_members for select using (is_org_member(organization_id));
-create policy "team_members_insert" on team_members for insert with check (is_org_member(organization_id));
-create policy "team_members_update" on team_members for update using (is_org_member(organization_id));
-create policy "team_members_delete" on team_members for delete using (is_org_member(organization_id));
+create policy "team_members_insert" on team_members for insert with check (is_org_admin(organization_id));
+create policy "team_members_update" on team_members for update using (is_org_admin(organization_id));
+create policy "team_members_delete" on team_members for delete using (is_org_admin(organization_id));
+
+-- ── Fase 10: member management (role changes, removal) ──────────────────
+-- organization_members is the single source of truth for identity/permissions.
+-- team_members is a synced projection, used only for /team's roster display
+-- and the leads.assigned_to FK — never authoritative for access control.
+--
+-- The sync is a database TRIGGER, not application discipline, precisely
+-- because "remember to write both tables" is what caused the bug fixed in
+-- accept_invite() (see CLAUDE.md's Team invites section): a trigger makes it
+-- structurally impossible for organization_members to change without
+-- team_members following, regardless of which code path (these RPCs, a
+-- future RPC, a manual SQL statement) performs the change. accept_invite()'s
+-- own explicit team_members insert is untouched by this — the trigger only
+-- fires on UPDATE OF role / DELETE, not INSERT, so the already-working,
+-- already-fixed acceptance flow is not affected at all.
+create or replace function sync_team_member_on_organization_member_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_email text;
+  v_name text;
+begin
+  if tg_op = 'DELETE' then
+    select email into v_email from auth.users where id = old.user_id;
+    if v_email is not null then
+      delete from team_members where organization_id = old.organization_id and email = v_email;
+    end if;
+    return old;
+  end if;
+
+  -- tg_op = 'UPDATE' (the trigger below only fires on UPDATE OF role, so
+  -- new.role <> old.role is already guaranteed, but this stays defensive in
+  -- case that trigger definition is ever loosened later).
+  if new.role is distinct from old.role then
+    select email, coalesce(nullif(trim(raw_user_meta_data ->> 'full_name'), ''), split_part(email, '@', 1))
+      into v_email, v_name
+    from auth.users where id = new.user_id;
+
+    if v_email is not null then
+      insert into team_members (organization_id, name, email, role)
+      values (new.organization_id, v_name, v_email, new.role)
+      on conflict (organization_id, email) do update set role = excluded.role;
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists organization_members_sync_team_members on organization_members;
+create trigger organization_members_sync_team_members
+  after update of role or delete on organization_members
+  for each row execute function sync_team_member_on_organization_member_change();
+
+-- update_member_role()/remove_organization_member() are the only sanctioned
+-- application entry points for changing a member's role or removing them.
+-- Both are SECURITY DEFINER, which means they run as the function owner and
+-- therefore BYPASS organization_members' RLS entirely — so every rule the
+-- RLS policies above enforce is re-validated here too, explicitly, in the
+-- same ordered-checks style as accept_invite(): authenticate, authorize
+-- (caller is admin), validate input, resolve the target, refuse to touch the
+-- owner, refuse to touch the caller's own row, only then mutate. The RLS
+-- policies remain the backstop against a direct REST call that skips these
+-- functions entirely — neither layer alone is considered sufficient.
+--
+-- Both take a team_members.id (p_team_member_id), not a raw user_id — that's
+-- the id /team's UI already has from useTeamMembersQuery(), and it avoids
+-- ever exposing auth.users identifiers to the client. Internally, the email
+-- on that team_members row is used to resolve the real organization_members
+-- row via auth.users — the same "resolve identity through auth.users email,
+-- never accept a client-supplied id for it" approach accept_invite() uses
+-- for the caller's own identity.
+create or replace function update_member_role(p_organization_id uuid, p_team_member_id uuid, p_new_role text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_target_email text;
+  v_target_user_id uuid;
+  v_target_current_role text;
+begin
+  if auth.uid() is null then
+    raise exception 'AUTH_REQUIRED';
+  end if;
+
+  if not is_org_admin(p_organization_id) then
+    raise exception 'NOT_ADMIN';
+  end if;
+
+  -- 'owner' is never an assignable value here — there is no ownership
+  -- transfer feature; the organization's owner is fixed for its lifetime as
+  -- far as this function is concerned (see CLAUDE.md's Team invites section).
+  if p_new_role not in ('admin', 'member', 'viewer') then
+    raise exception 'INVALID_ROLE';
+  end if;
+
+  select email into v_target_email
+  from team_members
+  where id = p_team_member_id and organization_id = p_organization_id;
+
+  if v_target_email is null then
+    raise exception 'MEMBER_NOT_FOUND';
+  end if;
+
+  select om.user_id, om.role into v_target_user_id, v_target_current_role
+  from organization_members om
+  join auth.users u on u.id = om.user_id
+  where om.organization_id = p_organization_id and lower(u.email) = lower(v_target_email);
+
+  if v_target_user_id is null then
+    raise exception 'MEMBER_NOT_FOUND';
+  end if;
+
+  if v_target_current_role = 'owner' then
+    raise exception 'CANNOT_MODIFY_OWNER';
+  end if;
+
+  if v_target_user_id = auth.uid() then
+    raise exception 'CANNOT_MODIFY_SELF';
+  end if;
+
+  update organization_members
+  set role = p_new_role
+  where organization_id = p_organization_id and user_id = v_target_user_id;
+  -- team_members is updated automatically by organization_members_sync_team_members above.
+end;
+$$;
+
+revoke execute on function update_member_role(uuid, uuid, text) from public;
+grant execute on function update_member_role(uuid, uuid, text) to authenticated;
+
+create or replace function remove_organization_member(p_organization_id uuid, p_team_member_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_target_email text;
+  v_target_user_id uuid;
+  v_target_current_role text;
+begin
+  if auth.uid() is null then
+    raise exception 'AUTH_REQUIRED';
+  end if;
+
+  if not is_org_admin(p_organization_id) then
+    raise exception 'NOT_ADMIN';
+  end if;
+
+  select email into v_target_email
+  from team_members
+  where id = p_team_member_id and organization_id = p_organization_id;
+
+  if v_target_email is null then
+    raise exception 'MEMBER_NOT_FOUND';
+  end if;
+
+  select om.user_id, om.role into v_target_user_id, v_target_current_role
+  from organization_members om
+  join auth.users u on u.id = om.user_id
+  where om.organization_id = p_organization_id and lower(u.email) = lower(v_target_email);
+
+  if v_target_user_id is null then
+    raise exception 'MEMBER_NOT_FOUND';
+  end if;
+
+  if v_target_current_role = 'owner' then
+    raise exception 'CANNOT_REMOVE_OWNER';
+  end if;
+
+  if v_target_user_id = auth.uid() then
+    raise exception 'CANNOT_REMOVE_SELF';
+  end if;
+
+  -- Only removes the organization_members row (this org's access) — never
+  -- touches auth.users, so the person's Supabase Auth account, and any
+  -- membership they hold in OTHER organizations, is completely untouched.
+  -- team_members is removed automatically by the sync trigger above;
+  -- leads.assigned_to pointing at that team_members row is set to NULL by
+  -- its existing `on delete set null` FK (see the leads table below) — a
+  -- removed member's leads become unassigned, never deleted.
+  delete from organization_members
+  where organization_id = p_organization_id and user_id = v_target_user_id;
+end;
+$$;
+
+revoke execute on function remove_organization_member(uuid, uuid) from public;
+grant execute on function remove_organization_member(uuid, uuid) to authenticated;
 
 -- ── forms ────────────────────────────────────────────────────────────────
 create table if not exists forms (

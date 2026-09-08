@@ -237,10 +237,18 @@ grant execute on function get_invite_by_token(uuid) to anon, authenticated;
 -- file) matches organization_invites.email, case-insensitively. Only after
 -- all three pass does it even look at organization_members — the insert
 -- is safe to run unconditionally (ON CONFLICT DO NOTHING covers an
--- already-a-member caller, e.g. a double-click or a redundant invite), and
--- the invite is always marked 'accepted' afterward so it never lingers
--- 'pending' once its conditions are genuinely satisfied — including for a
--- caller who turns out to already be a member.
+-- already-a-member caller, e.g. a double-click or a redundant invite).
+-- It also inserts a matching team_members row (ON CONFLICT DO NOTHING on
+-- the (organization_id, email) unique index, same reasoning) — without
+-- this, an accepted invitee became a real organization_members row but
+-- never showed up on /team's member list or the "Persona asignada" lead
+-- dropdown, both of which read team_members, not organization_members
+-- (these two were never merged — see CLAUDE.md's Phase 8 section — but an
+-- accepted invite is exactly the case where they need to stay in sync).
+-- The invite is marked 'accepted' only after both inserts succeed, so a
+-- failure here leaves it 'pending' (retryable) rather than lying about
+-- having completed — same "mark completion last" reasoning as Phase 9's
+-- onboarding flow.
 create or replace function accept_invite(p_token uuid)
 returns table (organization_id uuid, organization_slug text)
 language plpgsql
@@ -251,6 +259,7 @@ declare
   v_invite organization_invites%rowtype;
   v_org organizations%rowtype;
   v_caller_email text;
+  v_team_member_name text;
 begin
   if auth.uid() is null then
     raise exception 'AUTH_REQUIRED';
@@ -282,6 +291,19 @@ begin
   values (v_invite.organization_id, auth.uid(), v_invite.role)
   on conflict on constraint organization_members_organization_id_user_id_key do nothing;
 
+  -- Same full_name-else-email-local-part derivation OrganizationProvider.tsx
+  -- uses for the auto-provisioned owner's own team_members row (see
+  -- deriveOrganizationName there) — full_name is a standard Supabase Auth JWT
+  -- claim (auth.jwt() -> 'user_metadata'), no extra round trip needed.
+  v_team_member_name := coalesce(
+    nullif(trim(auth.jwt() -> 'user_metadata' ->> 'full_name'), ''),
+    split_part(v_invite.email, '@', 1)
+  );
+
+  insert into team_members (organization_id, name, email, role)
+  values (v_invite.organization_id, v_team_member_name, v_invite.email, v_invite.role)
+  on conflict (organization_id, email) do nothing;
+
   update organization_invites set status = 'accepted' where id = v_invite.id;
 
   return query select v_org.id, v_org.slug;
@@ -302,11 +324,19 @@ create table if not exists team_members (
   organization_id uuid not null references organizations(id) on delete cascade,
   name text not null,
   email text not null,
-  role text not null check (role in ('owner', 'admin', 'member'))
+  role text not null check (role in ('owner', 'admin', 'member', 'viewer'))
 );
 -- Email no longer globally unique (Phase 6) — two different organizations
 -- may each have their own assignable "Alex Morgan"-shaped row. Unique per org instead.
 create unique index if not exists team_members_org_email_key on team_members (organization_id, email);
+
+-- 'viewer' was added after this table's first release — this ALTER is a no-op
+-- on a fresh install (the create table above already allows it) but widens an
+-- existing project's constraint when this file is re-run. Needed so
+-- accept_invite() below can insert a team_members row for an invite that
+-- granted 'viewer', not just 'admin'/'member'.
+alter table team_members drop constraint if exists team_members_role_check;
+alter table team_members add constraint team_members_role_check check (role in ('owner', 'admin', 'member', 'viewer'));
 
 alter table team_members enable row level security;
 drop policy if exists "team_members_select" on team_members;

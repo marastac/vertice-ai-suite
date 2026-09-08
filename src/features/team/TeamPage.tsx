@@ -13,6 +13,7 @@ import {
   inviteStatusLabel,
   organizationRoleLabel,
   useInvitesQuery,
+  useOrganization,
   useRevokeInviteMutation,
 } from '@/entities/organization'
 import { InviteMemberModal } from './components/InviteMemberModal'
@@ -27,6 +28,14 @@ function initials(name: string) {
 }
 
 export function TeamPage() {
+  const { role } = useOrganization()
+  // Mirrors organization_invites' RLS policies (is_org_admin-only for select/insert/update/delete,
+  // see supabase/schema.sql) — a member/viewer can't create or revoke invites at the database
+  // level either way, this just avoids showing them a control that would fail with an unfriendly
+  // error. `local` backend always reports role 'owner' (see organization-repository.ts), so this
+  // never hides anything there.
+  const canManageInvites = role === 'owner' || role === 'admin'
+
   const { data: teamMembers = [] } = useTeamMembersQuery()
   const { data: invites = [] } = useInvitesQuery()
   const revokeMutation = useRevokeInviteMutation()
@@ -53,9 +62,11 @@ export function TeamPage() {
         title="Equipo"
         description="Gestiona quién tiene acceso a tu espacio de trabajo de Lead AI."
         actions={
-          <Button leftIcon={<UserPlus className="size-4" />} onClick={() => setIsInviteModalOpen(true)}>
-            Invitar miembro
-          </Button>
+          canManageInvites ? (
+            <Button leftIcon={<UserPlus className="size-4" />} onClick={() => setIsInviteModalOpen(true)}>
+              Invitar miembro
+            </Button>
+          ) : undefined
         }
       />
 
@@ -76,7 +87,7 @@ export function TeamPage() {
         ))}
       </Card>
 
-      {invites.length > 0 && (
+      {canManageInvites && invites.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Invitaciones pendientes</CardTitle>
@@ -118,17 +129,21 @@ export function TeamPage() {
         </Card>
       )}
 
-      <InviteMemberModal isOpen={isInviteModalOpen} onClose={() => setIsInviteModalOpen(false)} />
+      {canManageInvites && (
+        <>
+          <InviteMemberModal isOpen={isInviteModalOpen} onClose={() => setIsInviteModalOpen(false)} />
 
-      <ConfirmDialog
-        isOpen={inviteToRevoke !== null}
-        title="Revocar invitación"
-        description="La persona invitada ya no podrá usar este enlace para unirse."
-        confirmLabel="Revocar"
-        isConfirming={revokeMutation.isPending}
-        onConfirm={handleRevoke}
-        onCancel={() => setInviteToRevoke(null)}
-      />
+          <ConfirmDialog
+            isOpen={inviteToRevoke !== null}
+            title="Revocar invitación"
+            description="La persona invitada ya no podrá usar este enlace para unirse."
+            confirmLabel="Revocar"
+            isConfirming={revokeMutation.isPending}
+            onConfirm={handleRevoke}
+            onCancel={() => setInviteToRevoke(null)}
+          />
+        </>
+      )}
     </div>
   )
 }

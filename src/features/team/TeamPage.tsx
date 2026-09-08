@@ -7,6 +7,7 @@ import { Button } from '@/shared/ui/Button'
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog'
 import { teamMemberRoleBadgeVariant, teamMemberRoleLabel, useTeamMembersQuery } from '@/entities/team-member'
 import {
+  canManageInvites,
   formatInviteExpiresAt,
   getInviteUrl,
   inviteStatusBadgeVariant,
@@ -29,12 +30,9 @@ function initials(name: string) {
 
 export function TeamPage() {
   const { role } = useOrganization()
-  // Mirrors organization_invites' RLS policies (is_org_admin-only for select/insert/update/delete,
-  // see supabase/schema.sql) — a member/viewer can't create or revoke invites at the database
-  // level either way, this just avoids showing them a control that would fail with an unfriendly
-  // error. `local` backend always reports role 'owner' (see organization-repository.ts), so this
-  // never hides anything there.
-  const canManageInvites = role === 'owner' || role === 'admin'
+  // See entities/organization/permissions.ts for what this mirrors and why it's
+  // shared with useInvitesQuery instead of computed independently here.
+  const canManage = canManageInvites(role)
 
   const { data: teamMembers = [] } = useTeamMembersQuery()
   const { data: invites = [] } = useInvitesQuery()
@@ -62,7 +60,7 @@ export function TeamPage() {
         title="Equipo"
         description="Gestiona quién tiene acceso a tu espacio de trabajo de Lead AI."
         actions={
-          canManageInvites ? (
+          canManage ? (
             <Button leftIcon={<UserPlus className="size-4" />} onClick={() => setIsInviteModalOpen(true)}>
               Invitar miembro
             </Button>
@@ -87,7 +85,7 @@ export function TeamPage() {
         ))}
       </Card>
 
-      {canManageInvites && invites.length > 0 && (
+      {canManage && invites.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Invitaciones pendientes</CardTitle>
@@ -129,7 +127,7 @@ export function TeamPage() {
         </Card>
       )}
 
-      {canManageInvites && (
+      {canManage && (
         <>
           <InviteMemberModal isOpen={isInviteModalOpen} onClose={() => setIsInviteModalOpen(false)} />
 

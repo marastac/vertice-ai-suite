@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/entities/auth'
 import { activeOrganizationRepository } from './active-organization-repository'
+import { canManageInvites } from './permissions'
 import { useOrganization } from './use-organization'
 import type { CreateInviteInput } from './organization-repository'
 
@@ -11,11 +12,16 @@ export const organizationInviteKeys = {
 }
 
 export function useInvitesQuery() {
-  const { organization } = useOrganization()
+  const { organization, role } = useOrganization()
   return useQuery({
     queryKey: organizationInviteKeys.list(organization?.id),
+    // Gated on role, not just `organization` — a member/viewer's browser should
+    // never issue this request at all (organization_invites is admin-only per
+    // RLS, see permissions.ts), rather than relying solely on TeamPage hiding
+    // the rendered result. This also means the cache is never populated with
+    // invite data for a role that shouldn't see it in the first place.
+    enabled: Boolean(organization) && canManageInvites(role),
     queryFn: () => activeOrganizationRepository.listInvites(organization!.id),
-    enabled: Boolean(organization),
   })
 }
 

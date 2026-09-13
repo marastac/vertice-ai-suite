@@ -26,3 +26,27 @@ export function canManageInvites(role: OrganizationRole | null): boolean {
 export function canManageMembers(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Mirrors is_org_editor(organization_id) — the RLS helper leads_insert/
+ * leads_update both call (see supabase/schema.sql) — so owner/admin/member
+ * can create and edit leads, and a viewer cannot. Unlike canManageInvites
+ * vs. canManageMembers above, this one genuinely IS the same underlying
+ * concept as the SQL function of the same shape, not just a coincidentally
+ * equal threshold — keep the `role !== 'viewer'` condition in sync with
+ * is_org_editor() if either ever changes.
+ */
+export function canEditLeads(role: OrganizationRole | null): boolean {
+  return role !== null && role !== 'viewer'
+}
+
+/**
+ * Mirrors leads_delete's RLS (is_org_admin(organization_id)) — a member can
+ * create/edit leads (see canEditLeads above) but not delete them; a viewer
+ * can do neither. Declared separately from canManageInvites/canManageMembers
+ * even though the boolean logic is identical, for the same "don't collapse
+ * conceptually distinct permissions into one name" reason documented above.
+ */
+export function canDeleteLeads(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}

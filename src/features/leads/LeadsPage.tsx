@@ -5,6 +5,7 @@ import { Card } from '@/shared/ui/Card'
 import { Button } from '@/shared/ui/Button'
 import { EmptyState } from '@/shared/ui/EmptyState'
 import { Modal } from '@/shared/ui/Modal'
+import { canEditLeads, useOrganization } from '@/entities/organization'
 import { useTeamMembersQuery } from '@/entities/team-member'
 import { useCreateLeadMutation, useLeadsQuery } from '@/entities/lead'
 import type { LeadFormValues } from '@/entities/lead'
@@ -15,6 +16,9 @@ import { LeadsTable } from './components/LeadsTable'
 import { LeadForm } from './components/LeadForm'
 
 export function LeadsPage() {
+  const { role } = useOrganization()
+  const canCreate = canEditLeads(role)
+
   const { data: leads, isLoading, isError, refetch } = useLeadsQuery()
   const { data: teamMembers = [] } = useTeamMembersQuery()
   const createMutation = useCreateLeadMutation()
@@ -70,9 +74,11 @@ export function LeadsPage() {
         title="Leads"
         description="Todos los leads captados a través de tus formularios, chat con IA e integraciones."
         actions={
-          <Button leftIcon={<Plus className="size-4" />} onClick={() => setIsCreateOpen(true)}>
-            Nuevo lead
-          </Button>
+          canCreate ? (
+            <Button leftIcon={<Plus className="size-4" />} onClick={() => setIsCreateOpen(true)}>
+              Nuevo lead
+            </Button>
+          ) : undefined
         }
       />
 
@@ -102,11 +108,13 @@ export function LeadsPage() {
         <EmptyState
           icon={<Users className="size-5" />}
           title="Aún no tienes leads"
-          description="Los leads captados desde tus formularios y chat con IA aparecerán aquí. Puedes añadir uno manualmente."
+          description="Los leads captados desde tus formularios y chat con IA aparecerán aquí."
           action={
-            <Button leftIcon={<Plus className="size-4" />} onClick={() => setIsCreateOpen(true)}>
-              Nuevo lead
-            </Button>
+            canCreate ? (
+              <Button leftIcon={<Plus className="size-4" />} onClick={() => setIsCreateOpen(true)}>
+                Nuevo lead
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -127,21 +135,23 @@ export function LeadsPage() {
         <LeadsTable leads={filteredLeads} teamMembers={teamMembers} />
       )}
 
-      <Modal
-        isOpen={isCreateOpen}
-        onClose={() => setIsCreateOpen(false)}
-        title="Nuevo lead"
-        description="Añade manualmente un lead a tu pipeline de calificación."
-      >
-        <LeadForm
-          mode="create"
-          teamMembers={teamMembers}
-          onSubmit={handleCreate}
-          onCancel={() => setIsCreateOpen(false)}
-          isSubmitting={createMutation.isPending}
-          submitError={createMutation.isError ? 'No se pudo crear el lead. Inténtalo de nuevo.' : null}
-        />
-      </Modal>
+      {canCreate && (
+        <Modal
+          isOpen={isCreateOpen}
+          onClose={() => setIsCreateOpen(false)}
+          title="Nuevo lead"
+          description="Añade manualmente un lead a tu pipeline de calificación."
+        >
+          <LeadForm
+            mode="create"
+            teamMembers={teamMembers}
+            onSubmit={handleCreate}
+            onCancel={() => setIsCreateOpen(false)}
+            isSubmitting={createMutation.isPending}
+            submitError={createMutation.isError ? 'No se pudo crear el lead. Inténtalo de nuevo.' : null}
+          />
+        </Modal>
+      )}
     </div>
   )
 }

@@ -112,8 +112,39 @@ as $$
   );
 $$;
 
+-- Leads permissions (see the leads table's RLS below): owner/admin/member can
+-- create and edit leads, viewer can only read. 'not role = viewer' rather
+-- than an explicit 'in (owner, admin, member)' list, so a future new role
+-- defaults to editor-level access unless deliberately excluded — matches the
+-- product intent that viewer is the one deliberately restricted role, not
+-- that every other role had to be enumerated by hand.
+create or replace function is_org_editor(target_org_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1 from organization_members
+    where organization_id = target_org_id and user_id = auth.uid() and role <> 'viewer'
+  );
+$$;
+
+-- No `revoke ... from public` on any of these three — they keep Postgres'
+-- default at-creation EXECUTE grant to PUBLIC (which includes `anon`). This
+-- is deliberate, not an oversight: leads_insert's `with check` (below) is
+-- evaluated for anonymous /f/:formId and /c/:orgSlug submitters too, and
+-- Postgres checks a function's EXECUTE privilege at parse/plan time for
+-- every call in the expression tree — regardless of whether an `or` branch
+-- would make it unreachable at runtime for a given row. Revoking from
+-- `anon` here would make every anonymous public form submission fail with
+-- "permission denied for function is_org_editor", not just skip the branch.
+-- The `grant ... to authenticated` lines exist for documentation/clarity —
+-- the functions already work for anon via the un-revoked PUBLIC grant.
 grant execute on function is_org_member(uuid) to authenticated;
 grant execute on function is_org_admin(uuid) to authenticated;
+grant execute on function is_org_editor(uuid) to authenticated;
 
 alter table organizations enable row level security;
 drop policy if exists "organizations_select_public" on organizations;
@@ -645,28 +676,40 @@ drop policy if exists "leads_insert" on leads;
 drop policy if exists "leads_update" on leads;
 drop policy if exists "leads_delete" on leads;
 create policy "leads_select" on leads for select using (is_org_member(organization_id));
--- Public INSERT is intentional, not an oversight: a lead filling out
--- /f/:formId, or a website visitor qualifying through /c/:orgSlug, is never
--- signed in — both flows must be able to create a lead row. The
--- organization_id they write into comes from the form/chat config they're
--- already looking at (see entities/form/submission-service.ts and
--- entities/chat/qualification-service.ts), not from anything the visitor
--- chooses freely. Residual risk: a malicious anonymous client could still
--- POST a fabricated lead into a guessed organization_id (spam), same class
--- of risk as any public contact form — but never a READ of another
--- organization's data, since SELECT above stays member-only.
-create policy "leads_insert" on leads for insert with check (true);
--- UPDATE is more restrictive than INSERT: an authenticated org member can
--- update any lead in their org (normal dashboard editing), but an anonymous
--- caller may only update a lead that already has a chat_session_id — i.e.
--- exactly the upsertByChatSession() path used mid-conversation on the public
--- chat page to refine an existing lead's score as qualification improves.
--- An anonymous caller can never update a lead created via the manual "Nuevo
--- lead" form or a form submission (those have no chat_session_id).
+-- Public INSERT stays possible on purpose — a lead filling out /f/:formId,
+-- or a website visitor qualifying through /c/:orgSlug, is never signed in,
+-- and both flows must still be able to create a lead row. What changed:
+-- an AUTHENTICATED caller (any signed-in user, in any organization) now
+-- additionally needs is_org_editor(organization_id) — i.e. member/admin/
+-- owner of *that* organization, never 'viewer'. Before this, a signed-in
+-- viewer could create a lead manually from /leads exactly like an owner
+-- could; anon's branch is unchanged (organization_id still comes from the
+-- form/chat config the visitor is already looking at, never chosen freely —
+-- same residual spam risk as any public contact form, but never a READ of
+-- another organization's data, since SELECT above stays member-only).
+create policy "leads_insert" on leads for insert with check (
+  auth.uid() is null or is_org_editor(organization_id)
+);
+-- UPDATE: an authenticated org member can update a lead in their org only if
+-- they're not a 'viewer' (normal dashboard editing — status changes, the
+-- "Editar" form); an anonymous caller may only update a lead that already
+-- has a chat_session_id — i.e. exactly the upsertByChatSession() path used
+-- mid-conversation on the public chat page to refine an existing lead's
+-- score. In practice that anonymous path today goes through the
+-- upsert_chat_lead() RPC (SECURITY DEFINER, bypasses this policy entirely),
+-- so this branch is currently unreachable — kept as a defensive fallback in
+-- case a future change reintroduces a direct anonymous update, exactly as
+-- it existed before this change. An anonymous caller can never update a
+-- lead created via the manual "Nuevo lead" form or a form submission (those
+-- have no chat_session_id).
 create policy "leads_update" on leads for update
-  using (is_org_member(organization_id) or chat_session_id is not null)
-  with check (is_org_member(organization_id) or chat_session_id is not null);
-create policy "leads_delete" on leads for delete using (is_org_member(organization_id));
+  using (is_org_editor(organization_id) or chat_session_id is not null)
+  with check (is_org_editor(organization_id) or chat_session_id is not null);
+-- DELETE: owner/admin only — member can create/edit but not delete, per the
+-- confirmed permission matrix. This is the one operation where member and
+-- viewer are NOT treated the same as each other and member is NOT treated
+-- the same as owner/admin — is_org_admin already expresses exactly that.
+create policy "leads_delete" on leads for delete using (is_org_admin(organization_id));
 
 -- Why leads.submission_id has NO foreign key:
 -- submission-service.ts creates the Lead FIRST (already stamped with a

@@ -118,7 +118,9 @@ supabase/              # schema.sql (run once in the SQL editor, fresh project) 
                         # below, and migrations-member-management.sql (tightened organization_members/
                         # team_members RLS, the organization_members → team_members sync trigger, and the
                         # update_member_role()/remove_organization_member() RPCs) — see "Fase 10: Team member
-                        # management" below. Not a Supabase CLI project (no
+                        # management" below, and migrations-leads-role-permissions.sql (is_org_editor() plus
+                        # the leads_insert/leads_update/leads_delete policy replacements) — see "Leads role
+                        # permissions" below. Not a Supabase CLI project (no
                         # supabase/config.toml) — every file here is a plain SQL script, not a versioned
                         # migrations directory.
 ```
@@ -232,21 +234,21 @@ Every lead, form, form submission, lead activity entry, chat configuration, and 
 
 **RLS policy table** — the one thing to get right before touching any policy in this area:
 
-| Table | SELECT | INSERT | UPDATE/DELETE |
-|---|---|---|---|
-| `organizations` | public (`using (true)`) | `created_by = auth.uid()` | `is_org_member` |
-| `chat_configuration` | public | `is_org_member` | `is_org_member` |
-| `forms` | public | `is_org_member` | `is_org_member` |
-| `leads` | `is_org_member` | public (`with check (true)`) | `is_org_member` **or** `chat_session_id is not null` |
-| `form_submissions` | `is_org_member` | public | `is_org_member` |
-| `lead_activity` | `is_org_member` | public | `is_org_member` |
-| `team_members` | `is_org_member` | `is_org_member` | `is_org_member` |
-| `organization_members` | `is_org_member` | narrow self-bootstrap (see below) | `is_org_admin` |
-| `organization_invites` | `is_org_admin` | `is_org_admin` | `is_org_admin` |
+| Table | SELECT | INSERT | UPDATE | DELETE |
+|---|---|---|---|---|
+| `organizations` | public (`using (true)`) | `created_by = auth.uid()` | `is_org_member` | `is_org_member` |
+| `chat_configuration` | public | `is_org_member` | `is_org_member` | `is_org_member` |
+| `forms` | public | `is_org_member` | `is_org_member` | `is_org_member` |
+| `leads` | `is_org_member` | public (anon) **or** `is_org_editor` (authenticated) — see "Leads role permissions" below | `is_org_editor` **or** `chat_session_id is not null` | `is_org_admin` |
+| `form_submissions` | `is_org_member` | public | `is_org_member` | `is_org_member` |
+| `lead_activity` | `is_org_member` | public | `is_org_member` | `is_org_member` |
+| `team_members` | `is_org_member` | `is_org_admin` (Fase 10) | `is_org_admin` (Fase 10) | `is_org_admin` (Fase 10) |
+| `organization_members` | `is_org_member` | narrow self-bootstrap (see below) | `is_org_admin` + not-self + not-owner (Fase 10) | `is_org_admin` + not-self + not-owner (Fase 10) |
+| `organization_invites` | `is_org_admin` | `is_org_admin` | `is_org_admin` | `is_org_admin` |
 
 Three tables (`organizations`, `forms`, `chat_configuration`) keep a **public** SELECT policy on purpose — `/f/:formId` and `/c/:orgSlug` are pre-existing, deliberately no-login product features (a lead filling out a form, or a website visitor starting a chat, is never signed in). **This means RLS does not provide read isolation for those three tables** — the authenticated dashboard's list views (`FormsPage`, `ChatSettingsPage`) rely on the app's own `.eq('organization_id', ...)` query filter for isolation, not RLS. Every other table's SELECT policy *does* fully isolate reads via `is_org_member`, so a bug in the app's query filtering can't leak another organization's leads/submissions/activity/team/members there.
 
-`leads`/`form_submissions`/`lead_activity` INSERT is intentionally public (`with check (true)`), not an oversight: a visitor filling out `/f/:formId` or qualifying through `/c/:orgSlug` is never signed in, and both flows must be able to write. The `organization_id` they write comes from the form/chat config they're already looking at (`submission-service.ts`, `qualification-service.ts`), never from anything the visitor chooses. Residual risk: an anonymous client could POST a fabricated lead into a guessed `organization_id` (spam) — same class of risk as any public contact form — but never a *read* of another organization's data, since SELECT stays member-only. `leads` UPDATE additionally allows an anonymous caller through when `chat_session_id is not null` — that's the `upsertByChatSession()` path the public chat page uses mid-conversation to refine a lead's score; a manually-created or form-sourced lead (no `chat_session_id`) can never be touched by an anonymous caller.
+`form_submissions`/`lead_activity` INSERT is intentionally public (`with check (true)`), not an oversight: a visitor filling out `/f/:formId` or qualifying through `/c/:orgSlug` is never signed in, and both flows must be able to write. The `organization_id` they write comes from the form/chat config they're already looking at (`submission-service.ts`, `qualification-service.ts`), never from anything the visitor chooses. Residual risk: an anonymous client could POST a fabricated row into a guessed `organization_id` (spam) — same class of risk as any public contact form — but never a *read* of another organization's data, since SELECT stays member-only. `leads` INSERT/UPDATE follow the same "public for anon" half but are further split by role for an *authenticated* caller — see "Leads role permissions" below, which supersedes the plain `with check (true)` this paragraph originally described for `leads` specifically. `leads` UPDATE additionally allows an anonymous caller through when `chat_session_id is not null` — that's the `upsertByChatSession()` path the public chat page uses mid-conversation to refine a lead's score (in practice, via the `upsert_chat_lead()` RPC, which is `SECURITY DEFINER` and bypasses this policy entirely — the branch is a defensive fallback, not something actually exercised today); a manually-created or form-sourced lead (no `chat_session_id`) can never be touched by an anonymous caller.
 
 `organization_members` INSERT is deliberately narrow: a user may only insert *themselves*, as `role = 'owner'`, into an organization *they themselves just created* (`organizations.created_by = auth.uid()`). Without that check, any signed-in user could grant themselves ownership of an arbitrary organization id — this is what makes silent first-login auto-provisioning (below) safe.
 
@@ -313,6 +315,23 @@ An owner or admin can now change another member's role or remove them entirely f
 **Migration for an existing project**: `supabase/migrations-member-management.sql` — for a project that already ran `migrations-team-invites-team-members.sql`. Purely additive (tightens the two RLS policy sets, creates the trigger, creates the two RPCs) — does not touch `accept_invite()` or any existing data.
 
 **Known limitations, deliberately out of scope for this phase**: no ownership-transfer feature (the owner's role is permanently fixed for the organization's lifetime as far as these RPCs are concerned); no self-service "leave this organization" flow (conceptually different rules from being removed by an admin — an owner leaving would need ownership transferred first); no realtime — if an admin changes someone's role or removes them while that person has an active session open, `useOrganization()`'s `role`/`organizations` (plain `OrganizationProvider` state, not a polling query) won't reflect it until that user's next reload or re-login, though RLS still protects the data correctly in the meantime regardless of what the stale UI shows.
+
+## Leads role permissions
+
+`leads_update`/`leads_delete` originally used `is_org_member(organization_id)` for both — meaning every role (`owner`/`admin`/`member`/`viewer`) had identical write access, since `is_org_member` doesn't look at role at all. A signed-in `viewer` could open any lead, edit its fields (including via a raw REST call from the browser, not just the app's "Editar" button), and the change persisted for the whole organization. This was undiscovered/undocumented until surfaced directly against a real project — not a Fase 10 regression, since Fase 10 never touched `leads` at all.
+
+**`is_org_editor(organization_id)`** (`supabase/schema.sql`, alongside `is_org_member`/`is_org_admin`) is the fix: `security definer`, `stable`, true for every role except `viewer`. Deliberately written as `role <> 'viewer'` rather than `role in ('owner','admin','member')`, so a hypothetical future role defaults to editor-level access unless explicitly excluded, matching the product intent that `viewer` is the one deliberately-restricted role. **Not revoked from `PUBLIC`** — same as `is_org_member`/`is_org_admin` — because `leads_insert`'s `with check` is evaluated for anonymous `/f/:formId`/`/c/:orgSlug` submitters too, and Postgres checks a function's EXECUTE privilege at parse/plan time for every call in an expression regardless of whether an `or` branch would make it unreachable at runtime for a given row; revoking from `anon` would make every anonymous public form submission fail outright with a permission error instead of just skipping that branch.
+
+**Confirmed permission matrix**: `owner`/`admin` — view, create, edit, delete. `member` — view, create, edit, **not** delete. `viewer` — view only.
+
+- `leads_select`: **unchanged**, still `is_org_member(organization_id)` — every role can see the leads list and detail pages.
+- `leads_insert`: `auth.uid() is null or is_org_editor(organization_id)`. The anonymous branch is untouched — `/f/:formId` submissions (`submission-service.ts`) and chat-originated leads (`qualification-service.ts`, exclusively through the `upsert_chat_lead()` RPC, which is `SECURITY DEFINER` and bypasses this policy regardless) both keep working exactly as before. The new second branch is what blocks a signed-in `viewer` from using the "Nuevo lead" button — or a raw `supabase.from('leads').insert(...)` call — since `create()` (`lead-supabase-repository.ts`) is the *same* method both the anonymous public-form path and the authenticated "Nuevo lead" path call; the policy is what distinguishes them, not separate code paths.
+- `leads_update`: `is_org_editor(organization_id) or chat_session_id is not null` — same structure as before, `is_org_member` swapped for `is_org_editor`. This is what the authenticated dashboard's "Editar" form, the inline status `<Select>`, and any direct REST call all go through — there is no RPC for lead edits, `lead-supabase-repository.ts::update()` is a plain `PATCH`, so this policy is the *entire* enforcement, not a backstop behind an RPC.
+- `leads_delete`: `is_org_admin(organization_id)` — this is the one operation where `member` is treated differently from `owner`/`admin`, reusing the existing helper as-is (no new function needed).
+
+**Frontend** (`entities/organization/permissions.ts::canEditLeads`/`canDeleteLeads`, mirroring `is_org_editor`/`is_org_admin` respectively): `LeadsPage.tsx` hides both "Nuevo lead" buttons (header and empty-state) and the create `Modal` for a `viewer`. `LeadDetailPage.tsx` hides "Editar" and its `Modal` for anyone `canEditLeads` rejects, hides "Eliminar" and its `ConfirmDialog` for anyone `canDeleteLeads` rejects, and replaces the interactive status `<Select>` with a plain read-only `Badge` (same `leadStatusBadgeVariant` `LeadsTable` already uses) when `!canEditLeads` — a disabled `<Select>` would still look editable, a `Badge` reads unambiguously as display-only. As with every other role gate in this app (invites, member management), **this is UI polish on top of the RLS fix, not a substitute for it** — hiding the button doesn't matter if the underlying policy doesn't also reject the write.
+
+**Migration for an existing project**: `supabase/migrations-leads-role-permissions.sql` — creates `is_org_editor()` and replaces the three policies. Purely additive/replacing, touches no existing data, does not affect `forms`, `chat_configuration`, `organization_members`, `team_members`, or any of their RPCs/triggers.
 
 ## Environment variables
 

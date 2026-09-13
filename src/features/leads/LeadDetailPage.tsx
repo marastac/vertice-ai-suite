@@ -4,11 +4,13 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Briefcase, Building2, Calendar, Mail, Pencil, Phone, Trash2, Wallet } from 'lucide-react'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/Card'
+import { Badge } from '@/shared/ui/Badge'
 import { EmptyState } from '@/shared/ui/EmptyState'
 import { Select } from '@/shared/ui/Select'
 import { Button } from '@/shared/ui/Button'
 import { Modal } from '@/shared/ui/Modal'
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog'
+import { canDeleteLeads, canEditLeads, useOrganization } from '@/entities/organization'
 import { useTeamMembersQuery } from '@/entities/team-member'
 import {
   LEAD_STATUSES,
@@ -16,6 +18,7 @@ import {
   formatLeadDate,
   formatLeadDateTime,
   leadSourceLabel,
+  leadStatusBadgeVariant,
   leadStatusLabel,
   useDeleteLeadMutation,
   useLeadQuery,
@@ -27,6 +30,10 @@ import { LeadTranscriptCard } from './components/LeadTranscriptCard'
 import { LeadQualificationCard } from './components/LeadQualificationCard'
 
 export function LeadDetailPage() {
+  const { role } = useOrganization()
+  const canEdit = canEditLeads(role)
+  const canDelete = canDeleteLeads(role)
+
   const { leadId } = useParams<{ leadId: string }>()
   const navigate = useNavigate()
   const { data: lead, isLoading, isError, refetch } = useLeadQuery(leadId)
@@ -122,25 +129,46 @@ export function LeadDetailPage() {
         description={lead.company}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Select
-              aria-label="Cambiar estado del lead"
-              value={lead.status}
-              onChange={handleStatusChange}
-              disabled={updateMutation.isPending}
-              className="w-auto"
-            >
-              {LEAD_STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {leadStatusLabel[status]}
-                </option>
-              ))}
-            </Select>
-            <Button variant="secondary" size="sm" leftIcon={<Pencil className="size-4" />} onClick={() => setIsEditOpen(true)}>
-              Editar
-            </Button>
-            <Button variant="danger" size="sm" leftIcon={<Trash2 className="size-4" />} onClick={() => setIsDeleteOpen(true)}>
-              Eliminar
-            </Button>
+            {canEdit ? (
+              <Select
+                aria-label="Cambiar estado del lead"
+                value={lead.status}
+                onChange={handleStatusChange}
+                disabled={updateMutation.isPending}
+                className="w-auto"
+              >
+                {LEAD_STATUSES.map((status) => (
+                  <option key={status} value={status}>
+                    {leadStatusLabel[status]}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              // Viewer can see the status but not change it — a disabled
+              // <Select> would still look interactive; a plain Badge (same
+              // one LeadsTable uses) reads clearly as display-only.
+              <Badge variant={leadStatusBadgeVariant[lead.status]}>{leadStatusLabel[lead.status]}</Badge>
+            )}
+            {canEdit && (
+              <Button
+                variant="secondary"
+                size="sm"
+                leftIcon={<Pencil className="size-4" />}
+                onClick={() => setIsEditOpen(true)}
+              >
+                Editar
+              </Button>
+            )}
+            {canDelete && (
+              <Button
+                variant="danger"
+                size="sm"
+                leftIcon={<Trash2 className="size-4" />}
+                onClick={() => setIsDeleteOpen(true)}
+              >
+                Eliminar
+              </Button>
+            )}
           </div>
         }
       />
@@ -275,33 +303,37 @@ export function LeadDetailPage() {
         </div>
       </div>
 
-      <Modal
-        isOpen={isEditOpen}
-        onClose={() => setIsEditOpen(false)}
-        title="Editar lead"
-        description="Actualiza la información de contacto, estado, puntuación y asignación."
-      >
-        <LeadForm
-          mode="edit"
-          defaultValues={editDefaultValues}
-          teamMembers={teamMembers}
-          onSubmit={handleEditSubmit}
-          onCancel={() => setIsEditOpen(false)}
-          isSubmitting={updateMutation.isPending}
-          submitError={updateMutation.isError ? 'No se pudieron guardar los cambios. Inténtalo de nuevo.' : null}
-        />
-      </Modal>
+      {canEdit && (
+        <Modal
+          isOpen={isEditOpen}
+          onClose={() => setIsEditOpen(false)}
+          title="Editar lead"
+          description="Actualiza la información de contacto, estado, puntuación y asignación."
+        >
+          <LeadForm
+            mode="edit"
+            defaultValues={editDefaultValues}
+            teamMembers={teamMembers}
+            onSubmit={handleEditSubmit}
+            onCancel={() => setIsEditOpen(false)}
+            isSubmitting={updateMutation.isPending}
+            submitError={updateMutation.isError ? 'No se pudieron guardar los cambios. Inténtalo de nuevo.' : null}
+          />
+        </Modal>
+      )}
 
-      <ConfirmDialog
-        isOpen={isDeleteOpen}
-        title="Eliminar lead"
-        description={`¿Seguro que quieres eliminar a ${lead.name}? Esta acción no se puede deshacer.`}
-        confirmLabel="Eliminar"
-        cancelLabel="Cancelar"
-        isConfirming={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onCancel={() => setIsDeleteOpen(false)}
-      />
+      {canDelete && (
+        <ConfirmDialog
+          isOpen={isDeleteOpen}
+          title="Eliminar lead"
+          description={`¿Seguro que quieres eliminar a ${lead.name}? Esta acción no se puede deshacer.`}
+          confirmLabel="Eliminar"
+          cancelLabel="Cancelar"
+          isConfirming={deleteMutation.isPending}
+          onConfirm={handleDelete}
+          onCancel={() => setIsDeleteOpen(false)}
+        />
+      )}
     </div>
   )
 }

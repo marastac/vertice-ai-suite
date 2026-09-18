@@ -7,6 +7,14 @@ import { AuthContext } from './auth-context'
 import type { AuthContextValue, AuthResult, SignUpResult } from './auth-context'
 import { translateAuthError } from './auth-errors'
 
+// Sentinel distinguishing "no auth event observed yet" from a genuine
+// anonymous session (`null`). Needed because supabase-js's onAuthStateChange
+// can fire its first event (INITIAL_SESSION) before getSession() below has
+// resolved — without this, a browser that already had a session would read
+// that first event as a change from the ref's initial value and wipe the
+// query cache on every fresh page load. See the guard in onAuthStateChange.
+const AUTH_STATE_UNRESOLVED = Symbol('auth-state-unresolved')
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [session, setSession] = useState<Session | null>(null)
@@ -18,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // member) would otherwise see whatever the previous account's queries left
   // cached under that same key, even after the new account's role/permissions
   // have correctly loaded. Clearing on every actual user change closes that.
-  const previousUserIdRef = useRef<string | null>(null)
+  const previousUserIdRef = useRef<string | null | typeof AUTH_STATE_UNRESOLVED>(AUTH_STATE_UNRESOLVED)
 
   useEffect(() => {
     if (!isSupabaseConfigured) return
@@ -33,7 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       const nextUserId = nextSession?.user.id ?? null
-      if (nextUserId !== previousUserIdRef.current) {
+      // Only clear once we have a real baseline to compare against — the
+      // very first event received (before getSession() has set one) just
+      // establishes that baseline, it is never itself a "change".
+      if (previousUserIdRef.current !== AUTH_STATE_UNRESOLVED && nextUserId !== previousUserIdRef.current) {
         queryClient.clear()
       }
       previousUserIdRef.current = nextUserId

@@ -20,7 +20,7 @@ import {
   useSaveChatConfigMutation,
 } from '@/entities/chat'
 import type { ChatConfiguration, ChatSettingsInput, ChatSettingsValues } from '@/entities/chat'
-import { useOrganization } from '@/entities/organization'
+import { canEditChatConfiguration, useOrganization } from '@/entities/organization'
 import { CriteriaEditor } from './components/CriteriaEditor'
 import { CollectedInfoEditor } from './components/CollectedInfoEditor'
 import { ChatPreview } from './components/ChatPreview'
@@ -42,7 +42,8 @@ function toFormValues(config: ChatConfiguration): ChatSettingsInput {
 }
 
 export function ChatSettingsPage() {
-  const { organization } = useOrganization()
+  const { organization, role } = useOrganization()
+  const canEdit = canEditChatConfiguration(role)
   const { data: config, isLoading } = useChatConfigQuery()
   const saveMutation = useSaveChatConfigMutation()
   const resetMutation = useResetChatConfigMutation()
@@ -90,6 +91,11 @@ export function ChatSettingsPage() {
   }
 
   async function handleSave(values: ChatSettingsValues) {
+    // Defense-in-depth alongside the disabled <fieldset> below and the
+    // hidden "Restablecer" button — chat_configuration_insert/update's RLS
+    // (is_org_editor(organization_id)) is what actually blocks a viewer,
+    // this just avoids firing a request that would only fail server-side.
+    if (!canEdit) return
     setSaveSuccess(false)
     await saveMutation.mutateAsync({
       assistantName: values.assistantName,
@@ -109,6 +115,7 @@ export function ChatSettingsPage() {
   }
 
   async function handleResetConfirm() {
+    if (!canEdit) return
     const defaults = await resetMutation.mutateAsync()
     reset(toFormValues(defaults))
     setIsResetOpen(false)
@@ -119,21 +126,34 @@ export function ChatSettingsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Configuración del chat"
-        description="Configura cómo el asistente de Lead AI califica a los leads en conversación."
+        description={
+          canEdit
+            ? 'Configura cómo el asistente de Lead AI califica a los leads en conversación.'
+            : 'Estás viendo esta configuración en modo solo lectura — tu rol de Visualizador no permite guardar cambios.'
+        }
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<RotateCcw className="size-4" />}
-            onClick={() => setIsResetOpen(true)}
-          >
-            Restablecer valores predeterminados
-          </Button>
+          canEdit ? (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RotateCcw className="size-4" />}
+              onClick={() => setIsResetOpen(true)}
+            >
+              Restablecer valores predeterminados
+            </Button>
+          ) : undefined
         }
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <form onSubmit={handleSubmit(handleSave)} noValidate className="flex flex-col gap-6 lg:col-span-3">
+        {/* A disabled <fieldset> natively disables every nested input/select/
+            textarea/button (including inside CollectedInfoEditor and
+            CriteriaEditor) without threading a `disabled` prop through each
+            one individually. `display: contents` keeps it invisible to the
+            existing `flex flex-col gap-6` layout. RLS is still what actually
+            blocks a viewer's write — this is UX only. */}
+        <fieldset disabled={!canEdit} className="contents">
           <Card>
             <CardHeader>
               <CardTitle>Identidad y tono</CardTitle>
@@ -238,6 +258,7 @@ export function ChatSettingsPage() {
               Guardar cambios
             </Button>
           </div>
+        </fieldset>
         </form>
 
         <div className="lg:col-span-2">
@@ -250,16 +271,18 @@ export function ChatSettingsPage() {
         </div>
       </div>
 
-      <ConfirmDialog
-        isOpen={isResetOpen}
-        title="Restablecer configuración"
-        description="Esto reemplazará la configuración actual del chat con los valores predeterminados. Esta acción no se puede deshacer."
-        confirmLabel="Restablecer"
-        cancelLabel="Cancelar"
-        isConfirming={resetMutation.isPending}
-        onConfirm={handleResetConfirm}
-        onCancel={() => setIsResetOpen(false)}
-      />
+      {canEdit && (
+        <ConfirmDialog
+          isOpen={isResetOpen}
+          title="Restablecer configuración"
+          description="Esto reemplazará la configuración actual del chat con los valores predeterminados. Esta acción no se puede deshacer."
+          confirmLabel="Restablecer"
+          cancelLabel="Cancelar"
+          isConfirming={resetMutation.isPending}
+          onConfirm={handleResetConfirm}
+          onCancel={() => setIsResetOpen(false)}
+        />
+      )}
     </div>
   )
 }

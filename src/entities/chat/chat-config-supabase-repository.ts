@@ -65,7 +65,7 @@ async function fetchRow(organizationId: string): Promise<ChatConfigurationRow> {
 }
 
 export const supabaseChatConfigRepository: ChatConfigRepository = {
-  async get(organizationId) {
+  async get(organizationId, role) {
     const { data, error } = await supabase
       .from('chat_configuration')
       .select('*')
@@ -74,11 +74,23 @@ export const supabaseChatConfigRepository: ChatConfigRepository = {
     if (error) throw error
     if (data) return fromRow(data)
 
-    // Nothing seeded yet for this org. Insert the default and ignore a
-    // conflict rather than checking-then-inserting, so two concurrent
-    // first-reads can't both try to create the row. ON CONFLICT DO NOTHING
-    // never returns the pre-existing row via .select(), regardless of which
-    // caller's insert actually won — so every caller re-fetches afterward.
+    // Nothing seeded yet for this org. A 'viewer' has no INSERT permission
+    // under chat_configuration_insert's RLS (is_org_editor(organization_id))
+    // — attempting the seed below would fail with an RLS error just for
+    // *reading* /chat-settings, not just for saving. Hand back an
+    // unpersisted default instead: it's exactly what the page would show
+    // right after an owner/admin/member seeds it for real, it never
+    // touches the database, and ChatSettingsPage already renders it
+    // strictly read-only for a viewer regardless (see canEditChatConfiguration).
+    if (role === 'viewer') {
+      return createDefaultChatConfiguration(organizationId)
+    }
+
+    // Insert the default and ignore a conflict rather than checking-then-
+    // inserting, so two concurrent first-reads can't both try to create the
+    // row. ON CONFLICT DO NOTHING never returns the pre-existing row via
+    // .select(), regardless of which caller's insert actually won — so
+    // every caller re-fetches afterward.
     const { error: seedError } = await supabase
       .from('chat_configuration')
       .upsert(toRow(createDefaultChatConfiguration(organizationId)), {

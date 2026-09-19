@@ -4,15 +4,35 @@ import { EmptyState } from '@/shared/ui/EmptyState'
 import { Button } from '@/shared/ui/Button'
 import { useCreateFormMutation, useFormQuery, useUpdateFormMutation } from '@/entities/form'
 import type { FormBuilderValues } from '@/entities/form'
+import { canEditForms, useOrganization } from '@/entities/organization'
 import { FormBuilder } from './components/FormBuilder'
 
 export function FormBuilderPage() {
   const { formId } = useParams<{ formId: string }>()
   const navigate = useNavigate()
+  const { role } = useOrganization()
   const isEditMode = Boolean(formId)
   const { data: form, isLoading, isError, refetch } = useFormQuery(formId)
   const createMutation = useCreateFormMutation()
   const updateMutation = useUpdateFormMutation()
+
+  // Blocks direct navigation to /forms/new or /forms/:formId/edit for a
+  // viewer — RLS (forms_insert/forms_update -> is_org_editor) is the real
+  // enforcement; this only prevents a viewer from reaching an editing UI
+  // that would just fail server-side.
+  if (!canEditForms(role)) {
+    return (
+      <EmptyState
+        title="No tienes permiso para editar formularios"
+        description="Tu rol de Visualizador solo permite consultar los formularios existentes."
+        action={
+          <Button variant="secondary" onClick={() => navigate('/forms')}>
+            Volver a formularios
+          </Button>
+        }
+      />
+    )
+  }
 
   if (isEditMode && isLoading) {
     return (

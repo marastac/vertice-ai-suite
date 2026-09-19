@@ -50,3 +50,36 @@ export function canEditLeads(role: OrganizationRole | null): boolean {
 export function canDeleteLeads(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Mirrors is_org_editor(organization_id) on forms_insert/forms_update (see
+ * supabase/schema.sql and
+ * supabase/migrations-forms-chat-submissions-role-permissions.sql) —
+ * owner/admin/member can create, edit, duplicate, and activate/deactivate a
+ * form; a viewer cannot. Questions live on the same `forms.questions` jsonb
+ * column, so this single check also covers "modificar preguntas" — there is
+ * no separate questions table/policy to gate independently.
+ */
+export function canEditForms(role: OrganizationRole | null): boolean {
+  return role !== null && role !== 'viewer'
+}
+
+/**
+ * Mirrors forms_delete's RLS (is_org_admin(organization_id)) — same
+ * owner/admin-only threshold as canDeleteLeads; a member can create/edit a
+ * form but not delete it.
+ */
+export function canDeleteForms(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}
+
+/**
+ * Mirrors is_org_editor(organization_id) on chat_configuration_insert/update
+ * — owner/admin/member can edit the chat assistant's configuration, a
+ * viewer can only read it. There is no delete affordance anywhere in the UI
+ * for this singleton-per-organization row (ChatConfigRepository has no
+ * delete method), so there is no matching canDeleteChatConfiguration.
+ */
+export function canEditChatConfiguration(role: OrganizationRole | null): boolean {
+  return role !== null && role !== 'viewer'
+}

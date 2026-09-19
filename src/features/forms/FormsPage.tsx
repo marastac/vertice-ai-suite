@@ -15,10 +15,14 @@ import {
   useSetFormStatusMutation,
 } from '@/entities/form'
 import type { QualificationFormWithStats } from '@/entities/form'
+import { canDeleteForms, canEditForms, useOrganization } from '@/entities/organization'
 import { FormStatusBadge } from './components/FormStatusBadge'
 
 export function FormsPage() {
   const navigate = useNavigate()
+  const { role } = useOrganization()
+  const canEdit = canEditForms(role)
+  const canDelete = canDeleteForms(role)
   const { data: forms, isLoading, isError, refetch } = useFormsQuery()
   const duplicateMutation = useDuplicateFormMutation()
   const setStatusMutation = useSetFormStatusMutation()
@@ -52,9 +56,11 @@ export function FormsPage() {
         title="Formularios de calificación"
         description="Diseña las preguntas que Lead AI usa para puntuar y calificar nuevos leads."
         actions={
-          <Button leftIcon={<Plus className="size-4" />} onClick={() => navigate('/forms/new')}>
-            Nuevo formulario
-          </Button>
+          canEdit ? (
+            <Button leftIcon={<Plus className="size-4" />} onClick={() => navigate('/forms/new')}>
+              Nuevo formulario
+            </Button>
+          ) : undefined
         }
       />
 
@@ -84,9 +90,11 @@ export function FormsPage() {
           title="Aún no tienes formularios"
           description="Crea tu primer formulario de calificación para empezar a captar leads."
           action={
-            <Button leftIcon={<Plus className="size-4" />} onClick={() => navigate('/forms/new')}>
-              Nuevo formulario
-            </Button>
+            canEdit ? (
+              <Button leftIcon={<Plus className="size-4" />} onClick={() => navigate('/forms/new')}>
+                Nuevo formulario
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -111,14 +119,16 @@ export function FormsPage() {
                   {formatFormDate(form.updatedAt)}
                 </p>
                 <div className="mt-auto flex flex-wrap items-center gap-2 pt-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    leftIcon={<Pencil className="size-4" />}
-                    onClick={() => navigate(`/forms/${form.id}/edit`)}
-                  >
-                    Editar
-                  </Button>
+                  {canEdit && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      leftIcon={<Pencil className="size-4" />}
+                      onClick={() => navigate(`/forms/${form.id}/edit`)}
+                    >
+                      Editar
+                    </Button>
+                  )}
                   <Link
                     to={`/forms/${form.id}/submissions`}
                     className="text-sm font-medium text-blue-400 hover:text-blue-300"
@@ -145,20 +155,26 @@ export function FormsPage() {
                   >
                     <ExternalLink className="size-4" />
                   </Button>
-                  <Button variant="ghost" size="sm" aria-label="Duplicar formulario" onClick={() => handleDuplicate(form.id)}>
-                    <Copy className="size-4" />
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => handleToggleStatus(form)}>
-                    {form.status === 'active' ? 'Desactivar' : 'Activar'}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label="Eliminar formulario"
-                    onClick={() => setFormToDelete(form)}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
+                  {canEdit && (
+                    <Button variant="ghost" size="sm" aria-label="Duplicar formulario" onClick={() => handleDuplicate(form.id)}>
+                      <Copy className="size-4" />
+                    </Button>
+                  )}
+                  {canEdit && (
+                    <Button variant="ghost" size="sm" onClick={() => handleToggleStatus(form)}>
+                      {form.status === 'active' ? 'Desactivar' : 'Activar'}
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label="Eliminar formulario"
+                      onClick={() => setFormToDelete(form)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -166,18 +182,20 @@ export function FormsPage() {
         </div>
       )}
 
-      <ConfirmDialog
-        isOpen={Boolean(formToDelete)}
-        title="Eliminar formulario"
-        description={
-          formToDelete ? `¿Seguro que quieres eliminar "${formToDelete.name}"? Esta acción no se puede deshacer.` : undefined
-        }
-        confirmLabel="Eliminar"
-        cancelLabel="Cancelar"
-        isConfirming={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onCancel={() => setFormToDelete(null)}
-      />
+      {canDelete && (
+        <ConfirmDialog
+          isOpen={Boolean(formToDelete)}
+          title="Eliminar formulario"
+          description={
+            formToDelete ? `¿Seguro que quieres eliminar "${formToDelete.name}"? Esta acción no se puede deshacer.` : undefined
+          }
+          confirmLabel="Eliminar"
+          cancelLabel="Cancelar"
+          isConfirming={deleteMutation.isPending}
+          onConfirm={handleDelete}
+          onCancel={() => setFormToDelete(null)}
+        />
+      )}
     </div>
   )
 }

@@ -626,9 +626,20 @@ drop policy if exists "forms_delete" on forms;
 -- Public on purpose: /f/:formId is a no-login public submission page —
 -- see the multi-tenancy note at the top of this file.
 create policy "forms_select" on forms for select using (true);
-create policy "forms_insert" on forms for insert with check (is_org_member(organization_id));
-create policy "forms_update" on forms for update using (is_org_member(organization_id));
-create policy "forms_delete" on forms for delete using (is_org_member(organization_id));
+-- INSERT/UPDATE: owner/admin/member (is_org_editor) — a viewer can view an
+-- organization's forms but not create, edit, duplicate, or activate/
+-- deactivate one. Questions live on this same row's `questions` jsonb
+-- column, so this also covers "modify questions" — there is no separate
+-- table/policy for them. WITH CHECK mirrors USING on the update policy so
+-- an UPDATE can never move a row's organization_id into an organization
+-- the caller isn't an editor of either (same pattern as leads_update).
+create policy "forms_insert" on forms for insert with check (is_org_editor(organization_id));
+create policy "forms_update" on forms for update
+  using (is_org_editor(organization_id))
+  with check (is_org_editor(organization_id));
+-- DELETE: owner/admin only, same threshold as leads_delete — a member can
+-- create/edit a form but not delete it.
+create policy "forms_delete" on forms for delete using (is_org_admin(organization_id));
 
 -- ── leads ────────────────────────────────────────────────────────────────
 create table if not exists leads (
@@ -824,12 +835,22 @@ drop policy if exists "form_submissions_select" on form_submissions;
 drop policy if exists "form_submissions_insert" on form_submissions;
 drop policy if exists "form_submissions_update" on form_submissions;
 drop policy if exists "form_submissions_delete" on form_submissions;
+-- SELECT stays is_org_member (unchanged) — every role, including viewer,
+-- can see an organization's submissions; only writing them is restricted.
 create policy "form_submissions_select" on form_submissions for select using (is_org_member(organization_id));
 -- Public INSERT, same reasoning as leads above: a visitor submitting a
--- public form is never signed in.
+-- public form is never signed in. Unchanged — this is the flow that must
+-- keep working with no login.
 create policy "form_submissions_insert" on form_submissions for insert with check (true);
-create policy "form_submissions_update" on form_submissions for update using (is_org_member(organization_id));
-create policy "form_submissions_delete" on form_submissions for delete using (is_org_member(organization_id));
+-- UPDATE/DELETE: no UI exposes editing or deleting a submission today, but
+-- RLS shouldn't rely on that — same is_org_editor/is_org_admin thresholds
+-- as forms above, so a viewer can't modify or delete a submission via a
+-- direct API call either. WITH CHECK mirrors USING for the same
+-- organization_id-reassignment reason as forms_update/leads_update.
+create policy "form_submissions_update" on form_submissions for update
+  using (is_org_editor(organization_id))
+  with check (is_org_editor(organization_id));
+create policy "form_submissions_delete" on form_submissions for delete using (is_org_admin(organization_id));
 
 -- ── lead_activity ────────────────────────────────────────────────────────
 -- The one place normalization is chosen over jsonb: this array is unbounded
@@ -888,11 +909,23 @@ drop policy if exists "chat_configuration_insert" on chat_configuration;
 drop policy if exists "chat_configuration_update" on chat_configuration;
 drop policy if exists "chat_configuration_delete" on chat_configuration;
 -- Public on purpose: /c/:orgSlug is a no-login public chat page — see the
--- multi-tenancy note at the top of this file.
+-- multi-tenancy note at the top of this file. SELECT is intentionally left
+-- as-is (public) — do not gate it by role/membership, it would break the
+-- public chat page's config lookup.
 create policy "chat_configuration_select" on chat_configuration for select using (true);
-create policy "chat_configuration_insert" on chat_configuration for insert with check (is_org_member(organization_id));
-create policy "chat_configuration_update" on chat_configuration for update using (is_org_member(organization_id));
-create policy "chat_configuration_delete" on chat_configuration for delete using (is_org_member(organization_id));
+-- INSERT/UPDATE: owner/admin/member (is_org_editor) — a viewer can read the
+-- chat assistant's configuration (via the public SELECT above, same as
+-- everyone) but not save changes to it, in /chat-settings or via a direct
+-- API call. WITH CHECK mirrors USING on the update policy for the same
+-- organization_id-reassignment reason as forms_update/leads_update.
+create policy "chat_configuration_insert" on chat_configuration for insert with check (is_org_editor(organization_id));
+create policy "chat_configuration_update" on chat_configuration for update
+  using (is_org_editor(organization_id))
+  with check (is_org_editor(organization_id));
+-- DELETE: owner/admin only, same threshold as forms_delete/leads_delete —
+-- no UI exposes this today (ChatConfigRepository has no delete method), but
+-- RLS shouldn't rely on that.
+create policy "chat_configuration_delete" on chat_configuration for delete using (is_org_admin(organization_id));
 
 -- ── chat_sessions / chat_messages ────────────────────────────────────────
 -- The "display copy" of a public chat conversation (/c/:orgSlug), moved out

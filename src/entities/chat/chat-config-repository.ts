@@ -2,6 +2,7 @@ import { LOCAL_ORGANIZATION_ID } from '@/entities/organization'
 import { readJSON, writeJSON } from '@/shared/lib/local-storage'
 import { createDefaultChatConfiguration } from './defaults'
 import type { ChatConfiguration } from './types'
+import type { OrganizationRole } from '@/entities/organization'
 
 const STORAGE_KEY = 'lead-ai:chat-config:v1'
 
@@ -11,7 +12,13 @@ const STORAGE_KEY = 'lead-ai:chat-config:v1'
 const LOCAL_ORGANIZATION_SLUG = 'vertice-agency'
 
 export interface ChatConfigRepository {
-  get(organizationId: string): Promise<ChatConfiguration>
+  /**
+   * `role` is optional and ignored by the local implementation (no RLS to
+   * respect). The Supabase implementation uses it to decide whether it may
+   * lazily seed a missing row — see chat-config-supabase-repository.ts's
+   * get() for why a 'viewer' must never attempt that INSERT.
+   */
+  get(organizationId: string, role?: OrganizationRole | null): Promise<ChatConfiguration>
   save(organizationId: string, config: ChatConfiguration): Promise<ChatConfiguration>
   reset(organizationId: string): Promise<ChatConfiguration>
   /**

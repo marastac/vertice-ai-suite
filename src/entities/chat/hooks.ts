@@ -10,10 +10,13 @@ export const chatConfigKeys = {
 }
 
 export function useChatConfigQuery() {
-  const { organization } = useOrganization()
+  const { organization, role } = useOrganization()
   return useQuery({
     queryKey: chatConfigKeys.all(organization?.id),
-    queryFn: () => activeChatConfigRepository.get(organization!.id),
+    // role lets the Supabase repository skip its lazy-seed INSERT for a
+    // viewer (no INSERT permission under RLS) and return an unpersisted
+    // default instead — see chat-config-supabase-repository.ts::get().
+    queryFn: () => activeChatConfigRepository.get(organization!.id, role),
     enabled: Boolean(organization),
   })
 }

@@ -1,9 +1,15 @@
 import { useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
-import { AlertCircle, GraduationCap, ShoppingBag, Sparkles, Video } from 'lucide-react'
+import { AlertCircle, Clock, GraduationCap, ShoppingBag, Sparkles, Video } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/shared/ui/Button'
-import { BUSINESS_TYPES, businessTypeDescription, businessTypeLabel, useOrganization } from '@/entities/organization'
+import {
+  BUSINESS_TYPES,
+  businessTypeDescription,
+  businessTypeLabel,
+  canCompleteOrganizationOnboarding,
+  useOrganization,
+} from '@/entities/organization'
 import type { BusinessType } from '@/entities/organization'
 import { BusinessTypeCard } from './components/BusinessTypeCard'
 
@@ -14,7 +20,7 @@ const businessTypeIcon: Record<BusinessType, LucideIcon> = {
 }
 
 export function OnboardingPage() {
-  const { organization, completeOnboarding } = useOrganization()
+  const { organization, role, completeOnboarding } = useOrganization()
   const navigate = useNavigate()
   const [selected, setSelected] = useState<BusinessType | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -24,6 +30,28 @@ export function OnboardingPage() {
   // nothing to do here, go straight to the dashboard.
   if (organization?.onboardingCompletedAt) {
     return <Navigate to="/dashboard" replace />
+  }
+
+  // A member/viewer typing /onboarding directly (OnboardingGate only
+  // redirects owner/admin here — see its doc comment) gets a read-only
+  // notice instead of the picker below: completeOnboarding() would just be
+  // rejected by organizations_update_members' RLS (is_org_admin(id)) for
+  // them regardless, so there is no functional form to show.
+  if (!canCompleteOrganizationOnboarding(role)) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-vertice-bg px-4 text-center text-slate-100">
+        <span className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
+          <Clock className="size-5 text-white" />
+        </span>
+        <h1 className="text-xl font-semibold text-white">Esta organización todavía está siendo configurada.</h1>
+        <p className="max-w-md text-sm text-slate-400">
+          El propietario o un administrador debe completar la configuración inicial antes de que puedas acceder.
+        </p>
+        <Button variant="secondary" onClick={() => navigate('/dashboard')}>
+          Volver al panel
+        </Button>
+      </div>
+    )
   }
 
   async function handleContinue() {

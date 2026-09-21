@@ -1,5 +1,6 @@
 import { createContext } from 'react'
 import type { BusinessType, Organization, OrganizationMembership, OrganizationRole } from './types'
+import type { UpdateOrganizationSettingsInput } from './organization-repository'
 
 export interface OrganizationContextValue {
   organization: Organization | null
@@ -12,6 +13,17 @@ export interface OrganizationContextValue {
   switchOrganization: (organizationId: string) => void
   /** Phase 9: completes /onboarding for the active organization — sets its business type, regenerates chat config, and creates a starter form. See entities/organization/onboarding-service.ts. */
   completeOnboarding: (businessType: BusinessType) => Promise<void>
+  /**
+   * /settings — saves name/supportEmail/brandColor for the active
+   * organization and patches it into `organization`/`organizations` in
+   * place, the same way completeOnboarding does above, so the sidebar/
+   * header/team switcher reflect the new name immediately with no reload.
+   * Throws (does not swallow) on failure — e.g. organizations_update_members'
+   * RLS rejecting a non-owner/admin caller — so callers can show a real
+   * error instead of a false success. Gate calls with
+   * canEditOrganizationSettings; RLS is the real enforcement either way.
+   */
+  updateSettings: (input: UpdateOrganizationSettingsInput) => Promise<void>
 }
 
 export const OrganizationContext = createContext<OrganizationContextValue | undefined>(undefined)

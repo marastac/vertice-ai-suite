@@ -17,6 +17,19 @@ export interface CreateInviteInput {
   invitedBy: string
 }
 
+/**
+ * Explicit whitelist for /settings — deliberately excludes id, slug,
+ * organization_id-equivalent (this row's own id), created_by, created_at,
+ * business_type, and onboarding_completed_at. A caller can never smuggle a
+ * change to any of those through this shape, at the TypeScript level, no
+ * matter what SettingsPage.tsx does.
+ */
+export interface UpdateOrganizationSettingsInput {
+  name: string
+  supportEmail?: string
+  brandColor?: string
+}
+
 export interface OrganizationRepository {
   listMyMemberships(userId: string): Promise<OrganizationMembership[]>
   createOrganization(name: string, createdBy: string): Promise<Organization>
@@ -30,6 +43,16 @@ export interface OrganizationRepository {
   acceptInvite(token: string): Promise<AcceptInviteResult>
   /** Phase 9: records the chosen business type and marks onboarding done — see app/layout/OnboardingGate.tsx. */
   completeOnboarding(organizationId: string, businessType: BusinessType): Promise<Organization>
+  /**
+   * /settings — updates only name/supportEmail/brandColor for one
+   * organization. The Supabase implementation relies on
+   * organizations_update_members' RLS (is_org_admin(id)) to reject this for
+   * anyone but owner/admin — see supabase/schema.sql and
+   * supabase/migrations-organization-settings.sql. Callers should still
+   * gate the UI with canEditOrganizationSettings so a member/viewer never
+   * sees a call fail that they should never have been able to attempt.
+   */
+  updateSettings(organizationId: string, input: UpdateOrganizationSettingsInput): Promise<Organization>
 }
 
 // slug is deliberately 'vertice-agency', not 'local' — this keeps the
@@ -38,16 +61,30 @@ export interface OrganizationRepository {
 const LOCAL_ORGANIZATION: Organization = { id: LOCAL_ORGANIZATION_ID, name: 'Organización local', slug: 'vertice-agency' }
 
 const ONBOARDING_STORAGE_KEY = 'lead-ai:organization-onboarding:v1'
+const SETTINGS_STORAGE_KEY = 'lead-ai:organization-settings:v1'
 
 interface StoredOnboardingState {
   businessType: BusinessType
   onboardingCompletedAt: string
 }
 
+// Same shape as UpdateOrganizationSettingsInput — kept as its own local
+// type rather than importing it, since this file only needs to round-trip
+// it through localStorage, not enforce the repository contract.
+interface StoredSettingsState {
+  name: string
+  supportEmail?: string
+  brandColor?: string
+}
+
 function readLocalOrganization(): Organization {
-  const stored = readJSON<StoredOnboardingState | null>(ONBOARDING_STORAGE_KEY, null)
-  if (!stored) return LOCAL_ORGANIZATION
-  return { ...LOCAL_ORGANIZATION, businessType: stored.businessType, onboardingCompletedAt: stored.onboardingCompletedAt }
+  const onboarding = readJSON<StoredOnboardingState | null>(ONBOARDING_STORAGE_KEY, null)
+  const settings = readJSON<StoredSettingsState | null>(SETTINGS_STORAGE_KEY, null)
+  return {
+    ...LOCAL_ORGANIZATION,
+    ...(settings ? { name: settings.name, supportEmail: settings.supportEmail, brandColor: settings.brandColor } : {}),
+    ...(onboarding ? { businessType: onboarding.businessType, onboardingCompletedAt: onboarding.onboardingCompletedAt } : {}),
+  }
 }
 
 /**
@@ -86,6 +123,11 @@ export const localOrganizationRepository: OrganizationRepository = {
   async completeOnboarding(_organizationId, businessType) {
     const state: StoredOnboardingState = { businessType, onboardingCompletedAt: new Date().toISOString() }
     writeJSON(ONBOARDING_STORAGE_KEY, state)
+    return readLocalOrganization()
+  },
+  async updateSettings(_organizationId, input) {
+    const state: StoredSettingsState = { name: input.name, supportEmail: input.supportEmail, brandColor: input.brandColor }
+    writeJSON(SETTINGS_STORAGE_KEY, state)
     return readLocalOrganization()
   },
 }

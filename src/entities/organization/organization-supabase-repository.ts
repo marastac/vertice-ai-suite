@@ -8,7 +8,11 @@ interface OrganizationRow {
   slug: string
   business_type: BusinessType | null
   onboarding_completed_at: string | null
+  support_email: string | null
+  brand_color: string | null
 }
+
+const ORGANIZATION_COLUMNS = 'id, name, slug, business_type, onboarding_completed_at, support_email, brand_color'
 
 interface MembershipRow {
   role: OrganizationRole
@@ -53,6 +57,8 @@ function normalizeOrganization(value: MembershipRow['organizations']): Organizat
     slug: row.slug,
     businessType: row.business_type ?? undefined,
     onboardingCompletedAt: row.onboarding_completed_at ?? undefined,
+    supportEmail: row.support_email ?? undefined,
+    brandColor: row.brand_color ?? undefined,
   }
 }
 
@@ -94,7 +100,7 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
   async listMyMemberships(userId) {
     const { data, error } = await supabase
       .from('organization_members')
-      .select('role, organizations(id, name, slug, business_type, onboarding_completed_at)')
+      .select(`role, organizations(${ORGANIZATION_COLUMNS})`)
       .eq('user_id', userId)
       .order('created_at', { ascending: true })
     if (error) throw error
@@ -182,11 +188,39 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
   },
 
   async completeOnboarding(organizationId, businessType) {
+    // Selects the full column set (not just business_type/onboarding_completed_at)
+    // so normalizeOrganization() never returns a row missing support_email/
+    // brand_color — OrganizationProvider replaces the whole cached
+    // Organization object with whatever this resolves to (see
+    // OrganizationProvider.tsx's completeOnboarding), so a narrower select
+    // here would wipe out any settings a caller had already saved.
     const { data, error } = await supabase
       .from('organizations')
       .update({ business_type: businessType, onboarding_completed_at: new Date().toISOString() })
       .eq('id', organizationId)
-      .select('id, name, slug, business_type, onboarding_completed_at')
+      .select(ORGANIZATION_COLUMNS)
+      .single()
+    if (error) throw error
+    return normalizeOrganization(data as OrganizationRow)
+  },
+
+  async updateSettings(organizationId, input) {
+    // Explicit whitelist, never a spread of caller input — id/slug/
+    // created_by/created_at/business_type/onboarding_completed_at can never
+    // reach this UPDATE no matter what SettingsPage.tsx passes in, since
+    // UpdateOrganizationSettingsInput's TypeScript shape doesn't carry them
+    // either. organizations_update_members' RLS (is_org_admin(id), see
+    // supabase/schema.sql) is what actually rejects this for member/viewer —
+    // this whitelist is defense-in-depth, not the real boundary.
+    const { data, error } = await supabase
+      .from('organizations')
+      .update({
+        name: input.name,
+        support_email: input.supportEmail ?? null,
+        brand_color: input.brandColor ?? null,
+      })
+      .eq('id', organizationId)
+      .select(ORGANIZATION_COLUMNS)
       .single()
     if (error) throw error
     return normalizeOrganization(data as OrganizationRow)

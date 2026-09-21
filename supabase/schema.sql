@@ -9,10 +9,14 @@
 -- ── Phase 9: onboarding ──────────────────────────────────────────────────
 -- `organizations.business_type`/`onboarding_completed_at` (below) drive a
 -- one-time setup screen (`/onboarding`) for brand-new organizations only —
--- see CLAUDE.md's "Phase 9: Onboarding & copy" section. No RLS policy
--- changes were needed for this: the existing `organizations_update_members`
--- policy (`is_org_member`) already lets a member set these two columns on
--- their own organization.
+-- see CLAUDE.md's "Phase 9: Onboarding & copy" section. `organizations_update_members`
+-- (below) is owner/admin-only (`is_org_admin`) — completeOnboarding() is
+-- only ever called by a role that satisfies that, because OnboardingGate.tsx
+-- and OnboardingPage.tsx both gate on canCompleteOrganizationOnboarding()
+-- (entities/organization/permissions.ts) before a member/viewer can reach
+-- or submit the completion form at all. A member/viewer of a not-yet-
+-- onboarded organization sees a read-only notice instead (AppShell.tsx +
+-- OrganizationPendingSetup.tsx), never the form.
 --
 -- ── Phase 8: multi-tenancy, read this first ─────────────────────────────
 -- Every table below now belongs to an `organizations` row via
@@ -53,6 +57,12 @@ create table if not exists organizations (
   -- see entities/organization/OrganizationProvider.tsx's OnboardingGate.
   business_type text check (business_type in ('content_creator', 'course_creator', 'online_business')),
   onboarding_completed_at timestamptz,
+  -- /settings (see src/features/settings/SettingsPage.tsx): both nullable —
+  -- NULL support_email/brand_color just means "not set yet", not an error.
+  -- brand_color is constrained to #RRGGBB at the database level too, not
+  -- only in the frontend's Zod schema (entities/organization/schema.ts).
+  support_email text,
+  brand_color text check (brand_color is null or brand_color ~ '^#[0-9A-Fa-f]{6}$'),
   created_at timestamptz not null default now()
 );
 
@@ -160,8 +170,18 @@ create policy "organizations_select_public" on organizations for select using (t
 -- separately below, scoped so this can't be used to claim someone else's org.
 create policy "organizations_insert_self" on organizations for insert
   with check (auth.uid() is not null and created_by = auth.uid());
+-- owner/admin only (is_org_admin), not is_org_member — a signed-in
+-- 'member'/'viewer' could otherwise UPDATE this row directly (e.g. rename
+-- the organization) via a raw REST call, same class of bug already fixed
+-- for leads/forms/chat_configuration/form_submissions. WITH CHECK mirrors
+-- USING for the same reason as those: this table's own `id` is its
+-- "organization_id" (there's no separate foreign column to protect), so
+-- WITH CHECK (is_org_admin(id)) evaluated against the *new* row keeps a
+-- caller from updating their way into administering a different
+-- organization's row than the one USING already authorized them for.
 create policy "organizations_update_members" on organizations for update
-  using (is_org_member(id));
+  using (is_org_admin(id))
+  with check (is_org_admin(id));
 
 alter table organization_members enable row level security;
 drop policy if exists "organization_members_select" on organization_members;

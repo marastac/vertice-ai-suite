@@ -83,3 +83,29 @@ export function canDeleteForms(role: OrganizationRole | null): boolean {
 export function canEditChatConfiguration(role: OrganizationRole | null): boolean {
   return role !== null && role !== 'viewer'
 }
+
+/**
+ * Mirrors organizations_update_members' RLS (is_org_admin(id) — see
+ * supabase/schema.sql and supabase/migrations-organization-settings.sql).
+ * Deliberately owner/admin-only, NOT is_org_editor's threshold — unlike
+ * Leads/Forms/Chat Configuration, a 'member' is read-only on /settings by
+ * product requirement, same as canManageInvites/canManageMembers above.
+ */
+export function canEditOrganizationSettings(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}
+
+/**
+ * Same owner/admin-only threshold as canEditOrganizationSettings above —
+ * kept as its own named function (not reused directly) because it gates a
+ * conceptually different action (completing /onboarding vs. editing
+ * /settings) that happens to share the same RLS boundary today
+ * (organizations_update_members: is_org_admin(id) covers both, since both
+ * end up as an UPDATE on the same `organizations` row). Used by
+ * OnboardingGate.tsx, OnboardingPage.tsx, and AppShell.tsx so the three
+ * places that need to know "can this role complete onboarding" never drift
+ * out of sync with each other or with the RLS policy.
+ */
+export function canCompleteOrganizationOnboarding(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}

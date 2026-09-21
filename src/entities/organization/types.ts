@@ -14,6 +14,10 @@ export interface Organization {
   businessType?: BusinessType
   /** Undefined/null means this organization hasn't been through /onboarding yet — see app/layout/OnboardingGate.tsx. */
   onboardingCompletedAt?: string
+  /** /settings — editable only by owner/admin, see entities/organization/permissions.ts::canEditOrganizationSettings. */
+  supportEmail?: string
+  /** /settings — hex color, e.g. "#6366F1". Same edit restriction as supportEmail. */
+  brandColor?: string
 }
 
 export interface OrganizationMembership {

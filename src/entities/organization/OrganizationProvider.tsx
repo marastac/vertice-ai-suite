@@ -9,6 +9,7 @@ import { completeOrganizationOnboarding } from './onboarding-service'
 import { OrganizationContext } from './organization-context'
 import { getPendingInviteToken } from './pending-invite-storage'
 import type { OrganizationContextValue } from './organization-context'
+import type { UpdateOrganizationSettingsInput } from './organization-repository'
 import { LOCAL_ORGANIZATION_ID } from './types'
 import type { BusinessType, Organization, OrganizationMembership, OrganizationRole } from './types'
 
@@ -141,6 +142,27 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
     [active],
   )
 
+  // /settings — mirrors completeOnboarding above exactly: call the
+  // repository, then patch the updated Organization into `memberships` in
+  // place. That patch is what makes the sidebar/header/OrganizationSwitcher
+  // (all of which read `organization`/`organizations` from this same
+  // context) reflect a new name with no reload — there's no separate
+  // "organization query" cache to invalidate. Errors (e.g. RLS rejecting a
+  // non-owner/admin caller) propagate to the caller unchanged; this never
+  // swallows a failure into a false success.
+  const updateSettings = useCallback(
+    async (input: UpdateOrganizationSettingsInput) => {
+      if (!active) throw new Error('No hay una organización activa.')
+      const updated = await activeOrganizationRepository.updateSettings(active.organization.id, input)
+      setMemberships((current) =>
+        current.map((membership) =>
+          membership.organization.id === updated.id ? { ...membership, organization: updated } : membership,
+        ),
+      )
+    },
+    [active],
+  )
+
   const value: OrganizationContextValue = useMemo(
     () => ({
       organization: active?.organization ?? null,
@@ -150,8 +172,9 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
       error,
       switchOrganization,
       completeOnboarding,
+      updateSettings,
     }),
-    [active, memberships, isLoading, error, switchOrganization, completeOnboarding],
+    [active, memberships, isLoading, error, switchOrganization, completeOnboarding, updateSettings],
   )
 
   return <OrganizationContext.Provider value={value}>{children}</OrganizationContext.Provider>

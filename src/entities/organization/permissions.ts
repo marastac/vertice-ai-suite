@@ -109,3 +109,18 @@ export function canEditOrganizationSettings(role: OrganizationRole | null): bool
 export function canCompleteOrganizationOnboarding(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Mirrors webhook_configurations' RLS (is_org_admin(organization_id) — see
+ * supabase/migrations-webhooks.sql) and, more importantly, the backend's
+ * own requireAdminRole() check in server/src/services/webhook-auth.ts,
+ * which re-verifies this server-side from the caller's JWT + a real
+ * organization_members lookup rather than trusting anything the frontend
+ * sends. This function only controls whether /integrations shows a
+ * functional "Configurar"/"Probar webhook" action to a member/viewer —
+ * hiding it here is UX, not the actual boundary; hitting the backend
+ * directly as member/viewer is still rejected regardless.
+ */
+export function canManageWebhooks(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}

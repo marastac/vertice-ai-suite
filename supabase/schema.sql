@@ -1203,3 +1203,188 @@ $$;
 revoke all on function public.link_chat_session_lead(uuid, uuid) from public;
 revoke all on function public.link_chat_session_lead(uuid, uuid) from anon, authenticated;
 grant execute on function public.link_chat_session_lead(uuid, uuid) to anon, authenticated;
+
+-- ── Webhooks (first real integration) ────────────────────────────────────
+-- See supabase/migrations-webhooks.sql for the full design rationale (why
+-- a trigger + outbox instead of pg_net, why no SELECT policy at all on
+-- webhook_configurations, why the trigger must be SECURITY DEFINER). This
+-- section mirrors that file exactly for a fresh install.
+
+create table if not exists webhook_configurations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null unique references organizations(id) on delete cascade,
+  url text not null,
+  is_active boolean not null default false,
+  -- Generated server-side by the Express backend, never sent back to the
+  -- browser after creation — see the "no select policy" note below.
+  secret text not null,
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists webhook_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  -- Nullable + ON DELETE SET NULL (not CASCADE) — deleting the
+  -- configuration or the lead must not erase delivery history/audit trail;
+  -- `payload` already holds a full snapshot. See
+  -- server/src/services/webhook-worker.ts for how a null
+  -- webhook_configuration_id on an in-flight delivery is handled.
+  webhook_configuration_id uuid references webhook_configurations(id) on delete set null,
+  event_type text not null check (event_type in ('lead.created')),
+  lead_id uuid references leads(id) on delete set null,
+  payload jsonb not null,
+  status text not null default 'pending' check (status in ('pending', 'processing', 'delivered', 'failed')),
+  attempts integer not null default 0,
+  next_attempt_at timestamptz,
+  locked_at timestamptz, -- processing lease, see claim_webhook_deliveries() below
+  last_attempted_at timestamptz,
+  last_error text,
+  response_status integer,
+  created_at timestamptz not null default now(),
+  delivered_at timestamptz
+);
+
+create index if not exists webhook_deliveries_status_next_attempt_idx
+  on webhook_deliveries (status, next_attempt_at);
+create index if not exists webhook_deliveries_organization_id_idx
+  on webhook_deliveries (organization_id);
+create index if not exists webhook_deliveries_lead_id_idx
+  on webhook_deliveries (lead_id);
+
+alter table webhook_configurations enable row level security;
+drop policy if exists "webhook_configurations_insert_admins" on webhook_configurations;
+drop policy if exists "webhook_configurations_update_admins" on webhook_configurations;
+drop policy if exists "webhook_configurations_delete_admins" on webhook_configurations;
+-- Deliberately NO select policy for anon/authenticated — the only reader is
+-- the Express backend via the service_role key, which strips `secret`
+-- before ever building a JSON response. See
+-- server/src/repositories/webhook-repository.ts's toPublicConfig().
+create policy "webhook_configurations_insert_admins" on webhook_configurations for insert
+  with check (is_org_admin(organization_id));
+create policy "webhook_configurations_update_admins" on webhook_configurations for update
+  using (is_org_admin(organization_id))
+  with check (is_org_admin(organization_id));
+create policy "webhook_configurations_delete_admins" on webhook_configurations for delete
+  using (is_org_admin(organization_id));
+
+alter table webhook_deliveries enable row level security;
+drop policy if exists "webhook_deliveries_select" on webhook_deliveries;
+create policy "webhook_deliveries_select" on webhook_deliveries for select
+  using (is_org_member(organization_id));
+-- Deliberately no insert/update/delete policy for anon/authenticated — only
+-- the SECURITY DEFINER trigger below and the backend's service_role client
+-- ever write this table.
+
+-- IMPORTANT — wrapped in BEGIN...EXCEPTION WHEN OTHERS: an AFTER INSERT
+-- trigger runs inside the same transaction as the triggering INSERT, so an
+-- unhandled exception here would roll back the lead INSERT too. This
+-- project's priority requirement is that a webhook-subsystem failure must
+-- never prevent a lead from being saved — see migrations-webhooks.sql's
+-- full comment on this function for the complete reasoning (why WHEN
+-- OTHERS is intentional here, what RAISE WARNING logs and why it never
+-- includes secret/payload, and why this can't mask a leads-INSERT failure
+-- since that already succeeded before this trigger fires).
+create or replace function notify_lead_created()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_config webhook_configurations%rowtype;
+  v_delivery_id uuid;
+  v_payload jsonb;
+begin
+  begin
+    select * into v_config
+    from webhook_configurations
+    where organization_id = NEW.organization_id and is_active = true
+    limit 1;
+
+    if v_config.id is not null then
+      v_delivery_id := gen_random_uuid();
+
+      v_payload := jsonb_build_object(
+        'event', 'lead.created',
+        'event_id', v_delivery_id,
+        'timestamp', now(),
+        'organization_id', NEW.organization_id,
+        'lead', jsonb_build_object(
+          'id', NEW.id,
+          'name', NEW.name,
+          'email', NEW.email,
+          'phone', NEW.phone,
+          'company', NEW.company,
+          'position', NEW.position,
+          'source', NEW.source,
+          'status', NEW.status,
+          'score', NEW.score,
+          'estimated_budget', NEW.estimated_budget,
+          'notes', NEW.notes,
+          'form_id', NEW.form_id,
+          'submission_id', NEW.submission_id,
+          'chat_session_id', NEW.chat_session_id,
+          'created_at', NEW.created_at
+        )
+      );
+
+      insert into webhook_deliveries (
+        id, organization_id, webhook_configuration_id, event_type, lead_id, payload, status
+      ) values (
+        v_delivery_id, NEW.organization_id, v_config.id, 'lead.created', NEW.id, v_payload, 'pending'
+      );
+    end if;
+  exception
+    when others then
+      raise warning 'notify_lead_created: failed to enqueue webhook delivery for lead % (org %): % (SQLSTATE %)',
+        NEW.id, NEW.organization_id, SQLERRM, SQLSTATE;
+  end;
+
+  return NEW;
+end;
+$$;
+
+-- See migrations-webhooks.sql's comment on this same line — hygiene, not a
+-- functional requirement (trigger firing doesn't need EXECUTE, and
+-- PostgreSQL refuses to call a `returns trigger` function directly either
+-- way).
+revoke execute on function notify_lead_created() from public;
+
+drop trigger if exists leads_notify_webhook on leads;
+create trigger leads_notify_webhook
+  after insert on leads
+  for each row
+  execute function notify_lead_created();
+
+-- Atomic worker claim — see migrations-webhooks.sql for why this must be a
+-- single UPDATE ... FOR UPDATE SKIP LOCKED statement rather than a select-
+-- then-update from the backend.
+create or replace function claim_webhook_deliveries(p_limit integer default 10, p_lease_seconds integer default 120)
+returns setof webhook_deliveries
+language sql
+as $$
+  update webhook_deliveries
+  set status = 'processing',
+      locked_at = now(),
+      last_attempted_at = now(),
+      attempts = attempts + 1
+  where id in (
+    select id from webhook_deliveries
+    where (
+      status = 'pending'
+      and (next_attempt_at is null or next_attempt_at <= now())
+    ) or (
+      status = 'processing'
+      and locked_at < now() - make_interval(secs => p_lease_seconds)
+    )
+    order by created_at
+    limit greatest(p_limit, 0)
+    for update skip locked
+  )
+  returning *;
+$$;
+
+revoke all on function claim_webhook_deliveries(integer, integer) from public;
+grant execute on function claim_webhook_deliveries(integer, integer) to service_role;

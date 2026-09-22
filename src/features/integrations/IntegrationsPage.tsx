@@ -1,53 +1,40 @@
-import { Plug, Webhook } from 'lucide-react'
+import { Plug } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/shared/ui/PageHeader'
 import { Card, CardContent, CardDescription, CardTitle } from '@/shared/ui/Card'
 import { Badge } from '@/shared/ui/Badge'
 import { Button } from '@/shared/ui/Button'
+import { WebhookIntegrationCard } from './components/WebhookIntegrationCard'
 
-// Roadmap only — none of these are wired to a real provider yet (no OAuth,
-// no external API calls, no webhook delivery). `status` exists specifically
-// so a future real integration (Webhooks is the likely first candidate)
-// only needs its own entry's `status` flipped to 'available' plus a real
-// onClick — the card list/grid below doesn't need to change shape for that.
-type IntegrationStatus = 'coming-soon'
-
+// Still roadmap-only — HubSpot/Zapier/Slack have no real provider wired up
+// yet (no OAuth, no external API calls). Webhooks graduated out of this
+// list into its own real component (WebhookIntegrationCard) — see that
+// file and entities/webhook/ for the first real integration.
 interface IntegrationRoadmapItem {
   id: string
   name: string
   description: string
   icon: LucideIcon
-  status: IntegrationStatus
 }
 
-const INTEGRATIONS: IntegrationRoadmapItem[] = [
-  {
-    id: 'webhook',
-    name: 'Webhooks',
-    description: 'Envía los nuevos leads a cualquier endpoint en tiempo real.',
-    icon: Webhook,
-    status: 'coming-soon',
-  },
+const COMING_SOON_INTEGRATIONS: IntegrationRoadmapItem[] = [
   {
     id: 'hubspot',
     name: 'HubSpot',
     description: 'Sincroniza los leads calificados directamente con HubSpot CRM.',
     icon: Plug,
-    status: 'coming-soon',
   },
   {
     id: 'zapier',
     name: 'Zapier',
     description: 'Conecta Lead AI con miles de aplicaciones.',
     icon: Plug,
-    status: 'coming-soon',
   },
   {
     id: 'slack',
     name: 'Slack',
     description: 'Recibe una notificación en cuanto un lead se califica.',
     icon: Plug,
-    status: 'coming-soon',
   },
 ]
 
@@ -56,11 +43,13 @@ export function IntegrationsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Integraciones"
-        description="Conecta Lead AI con las herramientas que ya utiliza tu negocio. Estas integraciones están en desarrollo y todavía no se pueden activar."
+        description="Conecta Lead AI con las herramientas que ya utiliza tu negocio."
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {INTEGRATIONS.map((integration) => (
+        <WebhookIntegrationCard />
+
+        {COMING_SOON_INTEGRATIONS.map((integration) => (
           <Card key={integration.id}>
             <CardContent className="flex flex-col gap-4 pt-5">
               <div className="flex items-center justify-between">
@@ -69,8 +58,7 @@ export function IntegrationsPage() {
                 </span>
                 {/* 'info', not 'neutral' — a grey "No conectado" badge reads as
                     "you could connect this but haven't", which isn't true
-                    yet. "Próximamente" is the honest state for all four
-                    cards today. */}
+                    yet. "Próximamente" is the honest state for these three. */}
                 <Badge variant="info">Próximamente</Badge>
               </div>
               <div>

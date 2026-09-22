@@ -25,6 +25,42 @@ export interface DeliveryAttemptResult {
   errorReason: string | null
 }
 
+// Derived structurally from https.RequestOptions itself (same reasoning as
+// the doc comment on buildPinnedLookup below) rather than importing
+// net.LookupFunction by name.
+type PinnedLookup = NonNullable<https.RequestOptions['lookup']>
+
+/**
+ * Builds the `lookup` function passed to https.request() below, pinning
+ * the connection to the exact address resolveSafeConnectTarget already
+ * validated — see that function's doc comment for why this pinning is the
+ * real SSRF/DNS-rebinding boundary.
+ *
+ * MUST branch on `options.all`: Node's own https.request()/net.connect()
+ * invoke this callback with `options.all === true` (confirmed empirically
+ * against a real HTTPS server, not just inferred from the dns.lookup()
+ * docs), which means Node expects the dns.lookup(..., { all: true }, cb)
+ * array contract — callback(err, [{ address, family }]) — not the single-
+ * address callback(err, address, family) form. Calling back with the wrong
+ * shape doesn't silently misbehave: Node throws ERR_INVALID_IP_ADDRESS
+ * synchronously while opening the socket, which surfaced as the generic
+ * 'network_error' below and broke every webhook delivery attempt — see
+ * test/webhook-delivery-lookup.test.ts, which exercises this exact
+ * function against a real local HTTP server specifically so this can't
+ * regress unnoticed again. Extracted as its own named function (rather
+ * than inline in the request options, where it lived when this bug was
+ * first introduced) so that test can call it directly.
+ */
+export function buildPinnedLookup(address: string, family: 4 | 6): PinnedLookup {
+  return (_hostname, options, callback) => {
+    if (options && typeof options === 'object' && 'all' in options && options.all) {
+      callback(null, [{ address, family }])
+    } else {
+      callback(null, address, family)
+    }
+  }
+}
+
 /**
  * Sends one signed POST to `params.url`. Only a 2xx status counts as
  * delivered; 3xx is treated as a failure without ever following the
@@ -75,16 +111,9 @@ export async function attemptWebhookDelivery(params: DeliveryAttemptParams): Pro
         port: target.port ? Number(target.port) : 443,
         path: `${target.pathname}${target.search}`,
         method: 'POST',
-        // Pins the actual TCP connection to the address resolveSafeConnectTarget
-        // just validated, instead of letting Node do its own independent
-        // DNS resolution for this connection — the type of `lookup` is
-        // inferred here from RequestOptions itself rather than imported by
-        // name, since @types/node doesn't export a single stable symbol for
-        // it across versions. See webhook-security.ts's doc comment for why
-        // this pinning is the actual SSRF/DNS-rebinding boundary.
-        lookup: (_hostname, _options, callback) => {
-          callback(null, address, family)
-        },
+        // See buildPinnedLookup's doc comment above for why this can't just
+        // be `callback(null, address, family)` inline.
+        lookup: buildPinnedLookup(address, family),
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': bodyBuffer.length,

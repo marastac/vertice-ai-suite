@@ -16,3 +16,11 @@ export const webhookTestBodySchema = z.object({
   organizationId: z.uuid(),
 })
 export type WebhookTestBody = z.infer<typeof webhookTestBodySchema>
+
+// Same shape as webhookTestBodySchema — kept as its own named schema (not a
+// shared alias) so each endpoint's request contract reads as its own thing,
+// matching this file's existing one-schema-per-route convention.
+export const webhookRegenerateSecretBodySchema = z.object({
+  organizationId: z.uuid(),
+})
+export type WebhookRegenerateSecretBody = z.infer<typeof webhookRegenerateSecretBodySchema>

@@ -11,7 +11,7 @@ export interface WebhookConfigurationPublic {
   updatedAt: string
 }
 
-/** Internal-only shape — includes `secret`. Never return this directly from a route handler; always go through toPublicConfig() first. */
+/** Internal-only shape — includes `secret`. Never return this directly from a route handler; always go through toPublicConfig() first, and only send `.secret` itself alongside it in the two responses that are explicitly allowed to reveal it (see createConfig()/regenerateSecret() below). */
 export interface WebhookConfigurationRow {
   id: string
   organization_id: string
@@ -44,11 +44,14 @@ export interface WebhookDeliveryRow {
 }
 
 // The one function allowed to turn a full row (with `secret`) into
-// something a route handler can send to the browser. Every GET/PUT
-// response in routes/webhooks.ts is built by calling this — there is
-// exactly one place in the whole backend where a leak of `secret` into a
-// JSON response could happen, and this is it.
-function toPublicConfig(row: WebhookConfigurationRow): WebhookConfigurationPublic {
+// something safe to send to the browser. Every response in
+// routes/webhooks.ts is built by calling this for the `config` part —
+// there is exactly one place in the whole backend where a leak of `secret`
+// into a JSON response could happen, and this is it. Exported so the route
+// layer can build the public-shaped `config` field even when it's holding
+// a WebhookConfigurationWithSecret (create/regenerate) — never so a route
+// can skip calling it.
+export function toPublicConfig(row: WebhookConfigurationRow): WebhookConfigurationPublic {
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -96,13 +99,21 @@ export const webhookRepository = {
     return (data as WebhookConfigurationRow) ?? null
   },
 
-  /** Always mints a fresh secret — only call once per organization (routes/webhooks.ts checks getConfig() first and calls this only when nothing exists yet). */
+  /**
+   * Always mints a fresh secret — only call once per organization
+   * (routes/webhooks.ts checks getConfig() first and calls this only when
+   * nothing exists yet). Returns the full row (secret included) — this is
+   * the one moment the secret is allowed to reach the caller, so the route
+   * can reveal it exactly once in the creation response. The route builds
+   * the public-shaped `config` field via toPublicConfig() and sends
+   * `secret` alongside it, never inside a cached/re-fetchable shape.
+   */
   async createConfig(params: {
     organizationId: string
     url: string
     isActive: boolean
     createdBy: string
-  }): Promise<WebhookConfigurationPublic> {
+  }): Promise<WebhookConfigurationRow> {
     const { data, error } = await client()
       .from('webhook_configurations')
       .insert({
@@ -115,7 +126,7 @@ export const webhookRepository = {
       .select('*')
       .single()
     if (error) throw new AppError(500, 'No se pudo crear la configuración del webhook.', error.message)
-    return toPublicConfig(data as WebhookConfigurationRow)
+    return data as WebhookConfigurationRow
   },
 
   /** Explicit whitelist — url/isActive only. Never touches `secret`; there is no rotation feature in this MVP. */
@@ -135,6 +146,30 @@ export const webhookRepository = {
       .single()
     if (error) throw new AppError(500, 'No se pudo actualizar la configuración del webhook.', error.message)
     return toPublicConfig(data as WebhookConfigurationRow)
+  },
+
+  /**
+   * Replaces the existing secret with a freshly generated one — the only
+   * way to recover from a lost secret, since it's never readable after its
+   * one-time reveal at creation. The caller (routes/webhooks.ts) has
+   * already confirmed a configuration exists via getConfig() before
+   * calling this; the `.eq('organization_id', ...)` + `.single()` combo
+   * still fails loudly (rather than silently no-op) if that assumption
+   * was somehow wrong by the time this runs. Returns the full row so the
+   * route can reveal the new secret exactly once, same pattern as
+   * createConfig(). The old secret is immediately and unrecoverably
+   * overwritten — there is no "previous secret" column, so a signature
+   * computed with it stops validating the instant this commits.
+   */
+  async regenerateSecret(organizationId: string): Promise<WebhookConfigurationRow> {
+    const { data, error } = await client()
+      .from('webhook_configurations')
+      .update({ secret: generateWebhookSecret(), updated_at: new Date().toISOString() })
+      .eq('organization_id', organizationId)
+      .select('*')
+      .single()
+    if (error) throw new AppError(500, 'No se pudo regenerar el secreto del webhook.', error.message)
+    return data as WebhookConfigurationRow
   },
 
   /** Atomic claim via the SQL function in migrations-webhooks.sql — see its doc comment for why this can't be a plain select-then-update from here. */

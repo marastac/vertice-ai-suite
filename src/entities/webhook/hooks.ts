@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/entities/auth'
 import { useOrganization } from '@/entities/organization'
-import { fetchWebhookConfig, saveWebhookConfig, testWebhook } from './api-client'
+import { fetchWebhookConfig, regenerateWebhookSecret, saveWebhookConfig, testWebhook } from './api-client'
 import type { SaveWebhookConfigParams } from './api-client'
 
 export const webhookKeys = {
@@ -48,5 +48,20 @@ export function useTestWebhookMutation() {
       if (!session?.access_token) throw new Error('No hay una sesión activa.')
       return testWebhook(session.access_token, organization.id)
     },
+  })
+}
+
+/** Owner/admin only — the backend re-verifies this independently (see requireAdminRole() in server/src/routes/webhooks.ts). Invalidates the config query afterward so `updatedAt` refreshes; url/isActive are untouched by a regenerate. */
+export function useRegenerateWebhookSecretMutation() {
+  const { organization } = useOrganization()
+  const { session } = useAuth()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => {
+      if (!organization) throw new Error('No hay una organización activa.')
+      if (!session?.access_token) throw new Error('No hay una sesión activa.')
+      return regenerateWebhookSecret(session.access_token, organization.id)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: webhookKeys.config(organization?.id) }),
   })
 }

@@ -1,4 +1,4 @@
-import type { WebhookConfiguration, WebhookTestResult } from './types'
+import type { WebhookConfigWithOptionalSecret, WebhookConfigWithSecret, WebhookConfiguration, WebhookTestResult } from './types'
 
 // Same pattern as entities/chat/api-client.ts — the one other place this
 // frontend calls the Express backend directly.
@@ -35,8 +35,16 @@ export interface SaveWebhookConfigParams {
   isActive: boolean
 }
 
-/** Owner/admin only — the backend re-verifies this from the JWT + organization_members, never trusts the caller. Never sends/receives a `secret` field. */
-export async function saveWebhookConfig(accessToken: string, params: SaveWebhookConfigParams): Promise<WebhookConfiguration> {
+/**
+ * Owner/admin only — the backend re-verifies this from the JWT +
+ * organization_members, never trusts the caller. The request never sends
+ * a `secret` field (there is nowhere in SaveWebhookConfigParams to put
+ * one). The response includes `secret` only the very first time — when
+ * this call creates the configuration — never on a later save that only
+ * edits url/isActive; see WebhookConfigModal.tsx for how the caller must
+ * handle that one-time value.
+ */
+export async function saveWebhookConfig(accessToken: string, params: SaveWebhookConfigParams): Promise<WebhookConfigWithOptionalSecret> {
   const response = await fetch(`${API_BASE_URL}/api/webhooks/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders(accessToken) },
@@ -45,9 +53,29 @@ export async function saveWebhookConfig(accessToken: string, params: SaveWebhook
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'No se pudo guardar la configuración del webhook.'))
   }
-  const data = (await response.json()) as ConfigResponseBody
+  const data = (await response.json()) as ConfigResponseBody & { secret?: string }
   if (!data.config) throw new Error('Respuesta inesperada del servidor.')
-  return data.config
+  return { config: data.config, secret: data.secret }
+}
+
+/**
+ * Owner/admin only. Issues a brand-new secret, invalidating the previous
+ * one immediately server-side — the only way to recover from a lost
+ * secret, since GET /config never includes one. The response always
+ * carries the new `secret`, exactly once — see WebhookConfigModal.tsx.
+ */
+export async function regenerateWebhookSecret(accessToken: string, organizationId: string): Promise<WebhookConfigWithSecret> {
+  const response = await fetch(`${API_BASE_URL}/api/webhooks/regenerate-secret`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(accessToken) },
+    body: JSON.stringify({ organizationId }),
+  })
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'No se pudo regenerar el secreto del webhook.'))
+  }
+  const data = (await response.json()) as ConfigResponseBody & { secret?: string }
+  if (!data.config || !data.secret) throw new Error('Respuesta inesperada del servidor.')
+  return { config: data.config, secret: data.secret }
 }
 
 /** Owner/admin only. Sends one signed test request immediately, server-side — never touches `leads` or the delivery outbox. */

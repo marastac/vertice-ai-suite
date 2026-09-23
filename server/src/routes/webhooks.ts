@@ -3,10 +3,15 @@ import { Router } from 'express'
 import { createRateLimiter } from '../lib/rate-limit.js'
 import { AppError } from '../lib/errors.js'
 import { validateWebhookUrlForSaving } from '../lib/webhook-security.js'
-import { webhookRepository } from '../repositories/webhook-repository.js'
+import { toPublicConfig, webhookRepository } from '../repositories/webhook-repository.js'
 import { requireAdminRole, requireAuthenticatedUser, requireOrganizationMembership } from '../services/webhook-auth.js'
 import { attemptWebhookDelivery } from '../services/webhook-delivery-service.js'
-import { webhookConfigBodySchema, webhookOrganizationQuerySchema, webhookTestBodySchema } from '../schemas/webhooks.js'
+import {
+  webhookConfigBodySchema,
+  webhookOrganizationQuerySchema,
+  webhookRegenerateSecretBodySchema,
+  webhookTestBodySchema,
+} from '../schemas/webhooks.js'
 
 export const webhooksRouter = Router()
 
@@ -31,7 +36,21 @@ webhooksRouter.get('/config', async (req, res, next) => {
   }
 })
 
-/** Owner/admin only — creates the configuration on first save, updates url/isActive afterward. Never accepts a `secret` field; the body schema doesn't even declare one. */
+/**
+ * Owner/admin only — creates the configuration on first save, updates
+ * url/isActive afterward. Never accepts a `secret` field; the body schema
+ * doesn't even declare one, so nothing the client sends can ever become
+ * the stored secret.
+ *
+ * Secret reveal, once: only the create branch (no `existing` row yet)
+ * mints a secret at all — see webhook-repository.ts::createConfig(). That
+ * branch's response includes `secret` this one time; the update branch
+ * never touches `secret` and its response never includes one. A second
+ * PUT against the same organization (editing url/isActive later) always
+ * takes the update branch, so this can only ever happen once per webhook
+ * configuration's lifetime — after that, regenerating (POST
+ * /regenerate-secret below) is the only way to see a secret again.
+ */
 webhooksRouter.put('/config', async (req, res, next) => {
   try {
     const body = webhookConfigBodySchema.parse(req.body)
@@ -45,16 +64,47 @@ webhooksRouter.put('/config', async (req, res, next) => {
     }
 
     const existing = await webhookRepository.getConfig(body.organizationId)
-    const saved = existing
-      ? await webhookRepository.updateConfig(body.organizationId, { url: body.url, isActive: body.isActive })
-      : await webhookRepository.createConfig({
-          organizationId: body.organizationId,
-          url: body.url,
-          isActive: body.isActive,
-          createdBy: user.id,
-        })
+    if (existing) {
+      const saved = await webhookRepository.updateConfig(body.organizationId, { url: body.url, isActive: body.isActive })
+      res.json({ config: saved })
+    } else {
+      const created = await webhookRepository.createConfig({
+        organizationId: body.organizationId,
+        url: body.url,
+        isActive: body.isActive,
+        createdBy: user.id,
+      })
+      res.json({ config: toPublicConfig(created), secret: created.secret })
+    }
+  } catch (error) {
+    next(error)
+  }
+})
 
-    res.json({ config: saved })
+/**
+ * Owner/admin only — issues a brand-new secret for an existing
+ * configuration and reveals it exactly once in this response, the only
+ * way to recover from a lost secret (there is no "show me the current
+ * one" endpoint — see GET /config below, which never includes it). The
+ * previous secret is overwritten in the same UPDATE, not merely
+ * superseded — any signature computed with it stops validating
+ * immediately, including for deliveries already in flight/queued but not
+ * yet attempted.
+ */
+webhooksRouter.post('/regenerate-secret', async (req, res, next) => {
+  try {
+    const body = webhookRegenerateSecretBodySchema.parse(req.body)
+    const user = await requireAuthenticatedUser(req)
+    const role = await requireOrganizationMembership(user.id, body.organizationId)
+    requireAdminRole(role)
+
+    const existing = await webhookRepository.getConfig(body.organizationId)
+    if (!existing) {
+      throw new AppError(404, 'No hay ningún webhook configurado todavía.')
+    }
+
+    const regenerated = await webhookRepository.regenerateSecret(body.organizationId)
+    res.json({ config: toPublicConfig(regenerated), secret: regenerated.secret })
   } catch (error) {
     next(error)
   }

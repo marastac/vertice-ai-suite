@@ -1388,3 +1388,74 @@ $$;
 
 revoke all on function claim_webhook_deliveries(integer, integer) from public;
 grant execute on function claim_webhook_deliveries(integer, integer) to service_role;
+
+-- ── HubSpot CRM integration — Fase 1: base de datos + RLS ──────────────────
+-- Mirrors supabase/migrations-hubspot.sql exactly — see that file for the
+-- full reasoning behind every choice below (composite FK for multi-tenant
+-- integrity, hub_portal_id's NOT NULL, the zero-SELECT-RLS pattern on the
+-- sensitive table, ON DELETE CASCADE vs SET NULL). No OAuth flow, no
+-- HubSpot API calls, no sync logic yet — later phases. Purely additive:
+-- does not alter any Webhooks table/policy/trigger/function above, and the
+-- one change to a preexisting table (the unique constraint added to
+-- `leads` just below) does not touch any existing constraint on it,
+-- including the one webhook_deliveries.lead_id already relies on.
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'leads_id_organization_id_key' and conrelid = 'leads'::regclass
+  ) then
+    alter table leads
+      add constraint leads_id_organization_id_key unique (id, organization_id);
+  end if;
+end $$;
+
+create table if not exists hubspot_connections (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null unique references organizations(id) on delete cascade,
+  hub_portal_id text not null,
+  access_token_encrypted text not null,
+  refresh_token_encrypted text not null,
+  access_token_expires_at timestamptz not null,
+  scopes text not null,
+  needs_reauth boolean not null default false,
+  connected_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table hubspot_connections enable row level security;
+drop policy if exists "hubspot_connections_insert_admins" on hubspot_connections;
+drop policy if exists "hubspot_connections_update_admins" on hubspot_connections;
+drop policy if exists "hubspot_connections_delete_admins" on hubspot_connections;
+
+create policy "hubspot_connections_insert_admins" on hubspot_connections for insert
+  with check (is_org_admin(organization_id));
+create policy "hubspot_connections_update_admins" on hubspot_connections for update
+  using (is_org_admin(organization_id))
+  with check (is_org_admin(organization_id));
+create policy "hubspot_connections_delete_admins" on hubspot_connections for delete
+  using (is_org_admin(organization_id));
+
+create table if not exists hubspot_contact_links (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  lead_id uuid not null,
+  foreign key (lead_id, organization_id) references leads (id, organization_id) on delete cascade,
+  hubspot_contact_id text not null,
+  last_synced_at timestamptz not null default now(),
+  last_sync_status text not null check (last_sync_status in ('synced', 'failed')),
+  last_sync_error text,
+  created_at timestamptz not null default now(),
+  unique (organization_id, lead_id)
+);
+
+create index if not exists hubspot_contact_links_organization_id_idx
+  on hubspot_contact_links (organization_id);
+
+alter table hubspot_contact_links enable row level security;
+drop policy if exists "hubspot_contact_links_select" on hubspot_contact_links;
+
+create policy "hubspot_contact_links_select" on hubspot_contact_links for select
+  using (is_org_member(organization_id));

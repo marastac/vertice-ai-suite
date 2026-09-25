@@ -49,6 +49,16 @@ export interface HubspotContactLinkRow {
   created_at: string
 }
 
+/** Internal-only — the OAuth CSRF state row. Never returned to a route handler's JSON response; consumeOauthState() below only ever returns the two fields a callback actually needs. */
+export interface HubspotOauthStateRow {
+  state: string
+  organization_id: string
+  user_id: string
+  created_at: string
+  expires_at: string
+  consumed_at: string | null
+}
+
 // The one function allowed to turn a full connection row (with both
 // encrypted token columns) into something safe to send to the browser —
 // same role as webhook-repository.ts's toPublicConfig(), kept as its own
@@ -195,5 +205,61 @@ export const hubspotRepository = {
       .single()
     if (error) throw new AppError(500, 'No se pudo guardar el estado de sincronización con HubSpot.', error.message)
     return data as HubspotContactLinkRow
+  },
+
+  /** Persists a freshly generated `state` value — see hubspot-oauth.ts for how it's generated. `expiresAt` is computed by the caller (short-lived, currently 10 minutes) so this stays a pure data-access call. */
+  async createOauthState(params: { state: string; organizationId: string; userId: string; expiresAt: string }): Promise<void> {
+    const { error } = await client().from('hubspot_oauth_states').insert({
+      state: params.state,
+      organization_id: params.organizationId,
+      user_id: params.userId,
+      expires_at: params.expiresAt,
+    })
+    if (error) throw new AppError(500, 'No se pudo iniciar la conexión con HubSpot.', error.message)
+  },
+
+  /**
+   * Atomically consumes a `state` value — the single UPDATE below only
+   * matches a row that is both unexpired AND not yet consumed, and stamps
+   * `consumed_at` in that same statement.
+   *
+   * "Exactly one row" is structurally guaranteed, not just intended: `state`
+   * is the table's PRIMARY KEY (see migrations-hubspot-oauth-state.sql),
+   * so `.eq('state', state)` can never match more than one row regardless
+   * of the other conditions — Postgres itself forbids a duplicate primary
+   * key from ever existing. Combined with `consumed_at is null` and
+   * `expires_at > now()`, the WHERE clause matches either that one row (if
+   * it's still valid) or zero rows (if it's unknown, expired, or already
+   * consumed) — never more.
+   *
+   * Atomicity comes from this being a single UPDATE statement: Postgres
+   * evaluates the WHERE clause and applies the write as one indivisible,
+   * row-locked operation. Two concurrent callback requests for the same
+   * `state` (a replay, or a doubled browser request) can never both
+   * succeed — whichever UPDATE's row lock is granted first is the only one
+   * that ever sees `consumed_at is null` still hold true; by the time the
+   * second UPDATE acquires the lock, `consumed_at` is already set, so its
+   * own WHERE clause no longer matches and it affects zero rows. This is
+   * the same underlying Postgres guarantee claim_webhook_deliveries relies
+   * on for its batch claim (there via `FOR UPDATE SKIP LOCKED` because it
+   * targets many rows at once); here a plain single-row UPDATE is enough
+   * because at most one row is ever a candidate to begin with.
+   *
+   * Returns `null` for zero matched rows — an unknown, expired, or
+   * already-consumed state — the caller (routes/hubspot.ts's
+   * handleOauthCallback()) treats all three identically: reject the
+   * callback, never distinguish which case it was to the browser.
+   */
+  async consumeOauthState(state: string): Promise<{ organizationId: string; userId: string } | null> {
+    const { data, error } = await client()
+      .from('hubspot_oauth_states')
+      .update({ consumed_at: new Date().toISOString() })
+      .eq('state', state)
+      .is('consumed_at', null)
+      .gt('expires_at', new Date().toISOString())
+      .select('organization_id, user_id')
+      .maybeSingle()
+    if (error) throw new AppError(500, 'No se pudo validar el estado de la conexión con HubSpot.', error.message)
+    return data ? { organizationId: data.organization_id as string, userId: data.user_id as string } : null
   },
 }

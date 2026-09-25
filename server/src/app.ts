@@ -4,6 +4,7 @@ import { config } from './config.js'
 import { errorHandler, notFoundHandler } from './lib/errors.js'
 import { chatRouter } from './routes/chat.js'
 import { healthRouter } from './routes/health.js'
+import { hubspotRouter } from './routes/hubspot.js'
 import { webhooksRouter } from './routes/webhooks.js'
 
 export function createApp() {
@@ -20,6 +21,7 @@ export function createApp() {
   app.use('/api', healthRouter)
   app.use('/api/chat', chatRouter)
   app.use('/api/webhooks', webhooksRouter)
+  app.use('/api/hubspot', hubspotRouter)
 
   app.use(notFoundHandler)
   app.use(errorHandler)

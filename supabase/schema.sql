@@ -1459,3 +1459,24 @@ drop policy if exists "hubspot_contact_links_select" on hubspot_contact_links;
 
 create policy "hubspot_contact_links_select" on hubspot_contact_links for select
   using (is_org_member(organization_id));
+
+-- ── HubSpot CRM integration — Fase 2: estado (`state`) de OAuth ────────────
+-- Mirrors supabase/migrations-hubspot-oauth-state.sql exactly — see that
+-- file for the full reasoning (why a table and not an in-memory Map, given
+-- Railway can restart the backend process between /oauth/start and
+-- /oauth/callback). Purely additive, no changes to any Webhooks or
+-- Fase 1 HubSpot table/policy above.
+create table if not exists hubspot_oauth_states (
+  state text primary key,
+  organization_id uuid not null references organizations(id) on delete cascade,
+  user_id uuid not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  consumed_at timestamptz
+);
+
+create index if not exists hubspot_oauth_states_expires_at_idx
+  on hubspot_oauth_states (expires_at);
+
+alter table hubspot_oauth_states enable row level security;
+-- Deliberately zero policies — see migrations-hubspot-oauth-state.sql.

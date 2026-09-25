@@ -72,7 +72,17 @@ describe('hubspotRepository has no role-aware exports', () => {
     const { hubspotRepository } = await import('../src/repositories/hubspot-repository.js')
     const functionNames = Object.keys(hubspotRepository)
     expect(functionNames.sort()).toEqual(
-      ['getConnection', 'getPublicConnection', 'upsertConnection', 'setNeedsReauth', 'deleteConnection', 'getContactLink', 'upsertContactLink'].sort(),
+      [
+        'getConnection',
+        'getPublicConnection',
+        'upsertConnection',
+        'setNeedsReauth',
+        'deleteConnection',
+        'getContactLink',
+        'upsertContactLink',
+        'createOauthState',
+        'consumeOauthState',
+      ].sort(),
     )
     for (const name of functionNames) {
       const fn = (hubspotRepository as unknown as Record<string, (...args: unknown[]) => unknown>)[name]

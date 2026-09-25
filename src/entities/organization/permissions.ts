@@ -124,3 +124,20 @@ export function canCompleteOrganizationOnboarding(role: OrganizationRole | null)
 export function canManageWebhooks(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Same owner/admin-only threshold as canManageWebhooks, mirrored
+ * independently — matches the backend's own requireAdminRole() check on
+ * GET /api/hubspot/oauth/start and POST /api/hubspot/disconnect (see
+ * server/src/routes/hubspot.ts), which re-verifies this server-side from
+ * the caller's JWT + organization_members rather than trusting anything
+ * the frontend sends. This function only controls whether /integrations
+ * shows a functional "Conectar"/"Desconectar" action to a member/viewer —
+ * hiding it here is UX, not the actual boundary; hitting the backend
+ * directly as member/viewer is still rejected regardless.
+ * GET /api/hubspot/connection has no such restriction — any member can
+ * read connection status, matching canManageWebhooks' own read/write split.
+ */
+export function canManageHubspot(role: OrganizationRole | null): boolean {
+  return role === 'owner' || role === 'admin'
+}

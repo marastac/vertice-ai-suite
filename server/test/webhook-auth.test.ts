@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { requireAdminRole } from '../src/services/webhook-auth.js'
+import { requireAdminRole, requireEditorRole } from '../src/services/webhook-auth.js'
 import { AppError } from '../src/lib/errors.js'
 import type { OrganizationRole } from '../src/services/webhook-auth.js'
 
@@ -45,6 +45,31 @@ describe('requireAdminRole', () => {
     const nonAdminRoles: OrganizationRole[] = ['member', 'viewer']
     for (const role of nonAdminRoles) {
       expect(() => requireAdminRole(role), `${role} should be rejected`).toThrow(AppError)
+    }
+  })
+})
+
+// requireEditorRole() is the exact function POST /api/hubspot/leads/:leadId/sync
+// calls — the same owner/admin/member vs. viewer threshold as canEditLeads()
+// on the frontend and is_org_editor() in RLS, deliberately weaker than
+// requireAdminRole() above since syncing a lead is an action on a lead the
+// caller can already edit, not an action on the HubSpot integration itself.
+describe('requireEditorRole', () => {
+  it('allows owner, admin, and member', () => {
+    const editorRoles: OrganizationRole[] = ['owner', 'admin', 'member']
+    for (const role of editorRoles) {
+      expect(() => requireEditorRole(role), `${role} should be allowed`).not.toThrow()
+    }
+  })
+
+  it('rejects viewer with a 403 AppError', () => {
+    expect(() => requireEditorRole('viewer')).toThrow(AppError)
+    try {
+      requireEditorRole('viewer')
+      expect.unreachable()
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppError)
+      expect((error as AppError).status).toBe(403)
     }
   })
 })

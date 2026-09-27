@@ -14,3 +14,29 @@ export interface HubspotConnection {
   connectedAt: string
   updatedAt: string
 }
+
+/**
+ * The result of a successful POST /leads/:leadId/sync — mirrors the
+ * server's SyncLeadToHubspotResult exactly (server/src/services/
+ * hubspot-sync-service.ts). The HubSpot contact id is kept only for
+ * internal bookkeeping (e.g. optimistic cache updates) — the UI never
+ * displays it, per product decision.
+ */
+export interface HubspotSyncResult {
+  hubspotContactId: string
+  syncedAt: string
+}
+
+/**
+ * The persisted sync status for one lead — mirrors the server's
+ * HubspotContactLinkPublic exactly (server/src/repositories/
+ * hubspot-repository.ts::toPublicContactLink()). `null` (not this type)
+ * represents "never synced" — see fetchHubspotContactLink() in
+ * api-client.ts.
+ */
+export interface HubspotContactLink {
+  hubspotContactId: string
+  lastSyncedAt: string
+  lastSyncStatus: 'synced' | 'failed'
+  lastSyncError: string | null
+}

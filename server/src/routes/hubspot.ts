@@ -5,15 +5,22 @@ import { AppError } from '../lib/errors.js'
 import { config } from '../config.js'
 import { logger } from '../lib/logger.js'
 import { decryptHubspotToken, encryptHubspotToken } from '../lib/hubspot-crypto.js'
-import { hubspotRepository } from '../repositories/hubspot-repository.js'
+import { hubspotRepository, toPublicContactLink } from '../repositories/hubspot-repository.js'
+import type { HubspotContactLinkPublic } from '../repositories/hubspot-repository.js'
 // Generic JWT + organization-membership + role helpers — not webhook-
 // specific despite living in webhook-auth.ts (see the HubSpot integration
 // audit's note on this). Reused here rather than duplicated, per explicit
 // direction for this phase: this is the same authentication/authorization
 // boundary every other authenticated route in this backend already uses.
-import { requireAdminRole, requireAuthenticatedUser, requireOrganizationMembership } from '../services/webhook-auth.js'
+import { requireAdminRole, requireAuthenticatedUser, requireEditorRole, requireOrganizationMembership } from '../services/webhook-auth.js'
 import { buildAuthorizeUrl, exchangeCodeForTokens, fetchHubPortalId, revokeRefreshToken } from '../services/hubspot-oauth.js'
-import { hubspotDisconnectBodySchema, hubspotOrganizationQuerySchema } from '../schemas/hubspot.js'
+import { syncLeadToHubspot } from '../services/hubspot-sync-service.js'
+import {
+  hubspotDisconnectBodySchema,
+  hubspotOrganizationQuerySchema,
+  hubspotSyncLeadBodySchema,
+  hubspotSyncLeadParamsSchema,
+} from '../schemas/hubspot.js'
 
 export const hubspotRouter = Router()
 
@@ -276,6 +283,72 @@ hubspotRouter.post('/disconnect', async (req, res, next) => {
     requireAdminRole(role)
 
     const result = await disconnectHubspotConnection(body.organizationId)
+    res.json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * Extracted from the route handler for the same testability reason as
+ * handleOauthCallback()/disconnectHubspotConnection() above. Deliberately
+ * calls ONLY requireOrganizationMembership() — no requireEditorRole() / no
+ * requireAdminRole() — since reading sync status is available to every
+ * role, viewer included (matches GET /connection's own "any member may
+ * read" threshold above). Isolation is enforced by
+ * hubspotRepository.getContactLink()'s own query, which filters on BOTH
+ * `organizationId` AND `leadId` together — a lead that doesn't belong to
+ * `organizationId` simply returns `null`, identically to "never synced",
+ * never a leak of another organization's row.
+ */
+export async function getLeadHubspotContactLink(
+  userId: string,
+  organizationId: string,
+  leadId: string,
+): Promise<HubspotContactLinkPublic | null> {
+  await requireOrganizationMembership(userId, organizationId)
+  const link = await hubspotRepository.getContactLink(organizationId, leadId)
+  return link ? toPublicContactLink(link) : null
+}
+
+/** Any organization member (viewer included) may read a lead's sync status — see getLeadHubspotContactLink()'s doc comment above. Never returns an error for "no link yet"; `{ contactLink: null }` is the normal, expected response. */
+hubspotRouter.get('/leads/:leadId/contact-link', async (req, res, next) => {
+  try {
+    const routeParams = hubspotSyncLeadParamsSchema.parse(req.params)
+    const query = hubspotOrganizationQuerySchema.parse(req.query)
+    const user = await requireAuthenticatedUser(req)
+
+    const contactLink = await getLeadHubspotContactLink(user.id, query.organizationId, routeParams.leadId)
+    res.json({ contactLink })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * Owner/admin/member — deliberately NOT requireAdminRole(). This is an
+ * action on a single lead the caller can already edit (see
+ * requireEditorRole()'s doc comment in webhook-auth.ts), not an action on
+ * the HubSpot integration itself — connecting/disconnecting stays
+ * owner/admin-only above. A viewer is rejected here exactly like they are
+ * by canEditLeads() on the frontend and is_org_editor() in RLS.
+ *
+ * The request body carries ONLY `organizationId` — every actual lead field
+ * (name, email, phone, company) is loaded server-side by
+ * syncLeadToHubspot() via hubspotRepository.getLeadForSync(), scoped to
+ * both `leadId` and `organizationId` together, so a lead belonging to a
+ * different organization can never be synced this way regardless of what
+ * the caller's own membership check already guarantees.
+ */
+hubspotRouter.post('/leads/:leadId/sync', async (req, res, next) => {
+  try {
+    const routeParams = hubspotSyncLeadParamsSchema.parse(req.params)
+    const body = hubspotSyncLeadBodySchema.parse(req.body)
+    const user = await requireAuthenticatedUser(req)
+    const role = await requireOrganizationMembership(user.id, body.organizationId)
+    requireEditorRole(role)
+
+    const result = await syncLeadToHubspot({ organizationId: body.organizationId, leadId: routeParams.leadId })
     res.json(result)
   } catch (error) {
     next(error)

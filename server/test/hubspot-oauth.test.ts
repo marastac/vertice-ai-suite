@@ -129,6 +129,49 @@ describe('refreshAccessToken — preserves-or-null refresh token behavior', () =
     expect(result.refreshToken).toBeNull()
     expect(result.accessToken).toBe('new-access')
   })
+
+  it('times out (reason: "timeout", never "rejected") when the request hangs — same simulated-AbortError convention as revokeRefreshToken\'s timeout test', async () => {
+    const { refreshAccessToken, isDefinitiveAuthRejection } = await loadWithEnv()
+    stubFetchOnce(async () => {
+      const abortError = new Error('The operation was aborted')
+      abortError.name = 'AbortError'
+      throw abortError
+    })
+
+    await expect(refreshAccessToken('old-refresh')).rejects.toThrow(/tiempo de espera/i)
+    try {
+      await refreshAccessToken('old-refresh')
+      expect.unreachable()
+    } catch (error) {
+      expect(isDefinitiveAuthRejection(error)).toBe(false)
+    }
+  })
+
+  it('is NOT a definitive auth rejection on a plain network failure either', async () => {
+    const { refreshAccessToken, isDefinitiveAuthRejection } = await loadWithEnv()
+    stubFetchOnce(async () => {
+      throw new Error('simulated network failure')
+    })
+
+    try {
+      await refreshAccessToken('old-refresh')
+      expect.unreachable()
+    } catch (error) {
+      expect(isDefinitiveAuthRejection(error)).toBe(false)
+    }
+  })
+
+  it('IS a definitive auth rejection when HubSpot returns a non-2xx status for the refresh grant (e.g. invalid_grant)', async () => {
+    const { refreshAccessToken, isDefinitiveAuthRejection } = await loadWithEnv()
+    stubFetchOnce(async () => jsonResponse(400, { error: 'invalid_grant' }))
+
+    try {
+      await refreshAccessToken('old-refresh')
+      expect.unreachable()
+    } catch (error) {
+      expect(isDefinitiveAuthRejection(error)).toBe(true)
+    }
+  })
 })
 
 describe('fetchHubPortalId', () => {

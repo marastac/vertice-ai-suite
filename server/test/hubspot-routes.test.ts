@@ -32,6 +32,7 @@ afterEach(() => {
   vi.resetModules()
   vi.doUnmock('../src/repositories/hubspot-repository.js')
   vi.doUnmock('../src/services/hubspot-oauth.js')
+  vi.doUnmock('../src/services/hubspot-contacts.js')
   vi.doUnmock('../src/services/webhook-auth.js')
   vi.doUnmock('../src/lib/hubspot-crypto.js')
 })
@@ -41,6 +42,7 @@ interface Mocks {
   upsertConnection?: ReturnType<typeof vi.fn>
   getConnection?: ReturnType<typeof vi.fn>
   deleteConnection?: ReturnType<typeof vi.fn>
+  getContactLink?: ReturnType<typeof vi.fn>
   requireOrganizationMembership?: ReturnType<typeof vi.fn>
   requireAdminRole?: ReturnType<typeof vi.fn>
   exchangeCodeForTokens?: ReturnType<typeof vi.fn>
@@ -57,20 +59,34 @@ async function loadRoutesWithMocks(mocks: Mocks) {
     hubspotRepository: {
       consumeOauthState: mocks.consumeOauthState ?? vi.fn(),
       upsertConnection: mocks.upsertConnection ?? vi.fn().mockResolvedValue({}),
+      updateTokensAfterRefresh: vi.fn(),
       getConnection: mocks.getConnection ?? vi.fn(),
       deleteConnection: mocks.deleteConnection ?? vi.fn().mockResolvedValue(undefined),
       getPublicConnection: vi.fn(),
       setNeedsReauth: vi.fn(),
-      getContactLink: vi.fn(),
+      getLeadForSync: vi.fn(),
+      getContactLink: mocks.getContactLink ?? vi.fn(),
       upsertContactLink: vi.fn(),
       createOauthState: vi.fn(),
     },
+    // Real implementation, duplicated here rather than imported — same
+    // convention already used for parseHubspotEncryptionKey below (a
+    // vi.doMock() factory fully replaces the module, so every export
+    // routes/hubspot.ts actually uses must be present or it resolves to
+    // `undefined` at import time).
+    toPublicContactLink: (row: { hubspot_contact_id: string; last_synced_at: string; last_sync_status: string; last_sync_error: string | null }) => ({
+      hubspotContactId: row.hubspot_contact_id,
+      lastSyncedAt: row.last_synced_at,
+      lastSyncStatus: row.last_sync_status,
+      lastSyncError: row.last_sync_error,
+    }),
   }))
 
   vi.doMock('../src/services/webhook-auth.js', () => ({
     requireAuthenticatedUser: vi.fn(),
     requireOrganizationMembership: mocks.requireOrganizationMembership ?? vi.fn().mockResolvedValue('owner'),
     requireAdminRole: mocks.requireAdminRole ?? vi.fn(),
+    requireEditorRole: vi.fn(),
   }))
 
   vi.doMock('../src/services/hubspot-oauth.js', () => ({
@@ -78,6 +94,11 @@ async function loadRoutesWithMocks(mocks: Mocks) {
     exchangeCodeForTokens: mocks.exchangeCodeForTokens ?? vi.fn(),
     fetchHubPortalId: mocks.fetchHubPortalId ?? vi.fn(),
     revokeRefreshToken: mocks.revokeRefreshToken ?? vi.fn(),
+    refreshAccessToken: vi.fn(),
+  }))
+
+  vi.doMock('../src/services/hubspot-contacts.js', () => ({
+    upsertHubspotContact: vi.fn(),
   }))
 
   vi.doMock('../src/lib/hubspot-crypto.js', () => ({
@@ -239,5 +260,84 @@ describe('disconnectHubspotConnection — deletes ONLY on a confirmed 2xx revoke
     await expect(disconnectHubspotConnection('org-1')).rejects.toThrow(/se conservó/)
     expect(deleteConnection).not.toHaveBeenCalled()
     expect(revokeRefreshToken).not.toHaveBeenCalled()
+  })
+})
+
+// getLeadHubspotContactLink() backs GET /leads/:leadId/contact-link — the
+// read-only sync-status endpoint. Deliberately calls ONLY
+// requireOrganizationMembership(), never requireEditorRole()/
+// requireAdminRole(), since every role (viewer included) may read this.
+describe('getLeadHubspotContactLink — read-only sync status, any role, org+lead scoped', () => {
+  it('returns the mapped, camelCased status for an authorized member', async () => {
+    const requireOrganizationMembership = vi.fn().mockResolvedValue('member')
+    const getContactLink = vi.fn().mockResolvedValue({
+      id: 'link-1',
+      organization_id: 'org-1',
+      lead_id: 'lead-1',
+      hubspot_contact_id: 'hs-contact-1',
+      last_synced_at: '2026-01-01T00:00:00.000Z',
+      last_sync_status: 'synced',
+      last_sync_error: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+    })
+
+    const { getLeadHubspotContactLink } = await loadRoutesWithMocks({ requireOrganizationMembership, getContactLink })
+    const result = await getLeadHubspotContactLink('user-1', 'org-1', 'lead-1')
+
+    expect(getContactLink).toHaveBeenCalledWith('org-1', 'lead-1')
+    expect(result).toEqual({
+      hubspotContactId: 'hs-contact-1',
+      lastSyncedAt: '2026-01-01T00:00:00.000Z',
+      lastSyncStatus: 'synced',
+      lastSyncError: null,
+    })
+    // Never leaks the row's internal id, organization_id, lead_id, or created_at.
+    expect(result).not.toHaveProperty('id')
+    expect(result).not.toHaveProperty('organizationId')
+    expect(result).not.toHaveProperty('leadId')
+    expect(result).not.toHaveProperty('createdAt')
+  })
+
+  it('allows a viewer to read — no requireEditorRole/requireAdminRole gate on this endpoint', async () => {
+    const requireOrganizationMembership = vi.fn().mockResolvedValue('viewer')
+    const getContactLink = vi.fn().mockResolvedValue(null)
+
+    const { getLeadHubspotContactLink } = await loadRoutesWithMocks({ requireOrganizationMembership, getContactLink })
+    const result = await getLeadHubspotContactLink('user-1', 'org-1', 'lead-1')
+
+    expect(requireOrganizationMembership).toHaveBeenCalledWith('user-1', 'org-1')
+    expect(result).toBeNull()
+  })
+
+  it('returns null (never an error) for a lead that has never been synced', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(null)
+    const { getLeadHubspotContactLink } = await loadRoutesWithMocks({ getContactLink })
+
+    await expect(getLeadHubspotContactLink('user-1', 'org-1', 'lead-1')).resolves.toBeNull()
+  })
+
+  it('never leaks another organization\'s link: a lead/organization pair that does not match returns null, delegated to getContactLink\'s own org+lead scoped query', async () => {
+    // getContactLink() itself filters on organization_id AND lead_id together
+    // (see hubspot-repository.ts) — a mismatched pair simply finds no row.
+    // This test pins the CONTRACT: getLeadHubspotContactLink() must pass
+    // both values through untouched, and must treat "no row" as null, never
+    // as an error or as data belonging to some other scope.
+    const getContactLink = vi.fn().mockResolvedValue(null)
+    const { getLeadHubspotContactLink } = await loadRoutesWithMocks({ getContactLink })
+
+    const result = await getLeadHubspotContactLink('user-1', 'org-A', 'lead-from-org-B')
+
+    expect(getContactLink).toHaveBeenCalledWith('org-A', 'lead-from-org-B')
+    expect(result).toBeNull()
+  })
+
+  it('rejects and never calls getContactLink when the caller is not a member of the organization at all', async () => {
+    const requireOrganizationMembership = vi.fn().mockRejectedValue(new Error('No perteneces a esta organización.'))
+    const getContactLink = vi.fn()
+
+    const { getLeadHubspotContactLink } = await loadRoutesWithMocks({ requireOrganizationMembership, getContactLink })
+
+    await expect(getLeadHubspotContactLink('user-1', 'org-1', 'lead-1')).rejects.toThrow(/no perteneces/i)
+    expect(getContactLink).not.toHaveBeenCalled()
   })
 })

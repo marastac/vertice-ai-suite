@@ -68,3 +68,19 @@ export function requireAdminRole(role: OrganizationRole): void {
     throw new AppError(403, 'Solo el propietario o un administrador pueden realizar esta acción.')
   }
 }
+
+/**
+ * Owner/admin/member — everyone except viewer. Mirrors canEditLeads() on
+ * the frontend and is_org_editor(organization_id) in the RLS policies
+ * (supabase/schema.sql) — the same threshold that already governs editing
+ * a lead directly, since syncing a lead to HubSpot is an action on a lead
+ * the caller can already edit, not an action on the HubSpot integration
+ * itself (that stays requireAdminRole()-gated — see POST
+ * /api/hubspot/leads/:leadId/sync vs. /oauth/start and /disconnect in
+ * routes/hubspot.ts).
+ */
+export function requireEditorRole(role: OrganizationRole): void {
+  if (role === 'viewer') {
+    throw new AppError(403, 'No tienes permiso para realizar esta acción.')
+  }
+}

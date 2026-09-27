@@ -37,6 +37,13 @@ const TOKEN_URL = 'https://api.hubapi.com/oauth/2026-09/token'
 const INTROSPECT_URL = 'https://api.hubapi.com/oauth/2026-09/token/introspect'
 const REVOKE_URL = 'https://api.hubapi.com/oauth/2026-09/token/revoke'
 const REVOKE_TIMEOUT_MS = 8_000
+// Same convention as REVOKE_TIMEOUT_MS above — postForm() backs three
+// foreground, interactive operations (the OAuth callback's code exchange,
+// the sync flow's token refresh, and the portal-id introspection right
+// after it), never a background job. 8s is enough for a normal HubSpot
+// token-endpoint response without leaving a request hanging indefinitely
+// if HubSpot is unresponsive.
+const POSTFORM_TIMEOUT_MS = 8_000
 
 // Minimal scope for this MVP — write-only, no .read, no
 // crm.schemas.contacts.write (see the HubSpot integration audit for the
@@ -77,6 +84,44 @@ export interface RevokeResult {
   reason?: string
 }
 
+/**
+ * Why postForm()'s failures are tagged rather than left as plain AppError:
+ * hubspot-sync-service.ts::ensureFreshAccessToken() must tell "HubSpot
+ * definitively rejected the refresh token" (reason: 'rejected' — a non-2xx
+ * HTTP status from HubSpot's own token endpoint, the same signal that
+ * already meant this before this change) apart from "we simply couldn't
+ * get a response in time" (reason: 'timeout'), "the network request itself
+ * never completed" (reason: 'network_error'), or "HubSpot answered but the
+ * body didn't parse/validate" (reason: 'invalid_response') — only the
+ * first of these should ever flip needs_reauth. A timeout or a transient
+ * network hiccup says nothing about whether the stored refresh token is
+ * still valid, so it must never be treated the same as a real rejection.
+ */
+export type HubspotOauthFailureReason = 'timeout' | 'network_error' | 'rejected' | 'invalid_response'
+
+export class HubspotOauthError extends AppError {
+  reason: HubspotOauthFailureReason
+
+  constructor(status: number, publicMessage: string, reason: HubspotOauthFailureReason) {
+    super(status, publicMessage)
+    this.reason = reason
+  }
+}
+
+/**
+ * True only for a definitive HTTP-level rejection from HubSpot's own token
+ * endpoint — never for a timeout, a network failure, or a malformed
+ * response. Deliberately duck-typed on `.reason` rather than `error
+ * instanceof HubspotOauthError`: an `instanceof` check against a class
+ * imported statically can spuriously fail in tests that re-import this
+ * module after `vi.resetModules()` (each re-import creates a distinct
+ * class object) — checking a plain property is immune to that and behaves
+ * identically in production, where there is only ever one module instance.
+ */
+export function isDefinitiveAuthRejection(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { reason?: unknown }).reason === 'rejected'
+}
+
 function requireConfigured(): void {
   if (!config.isHubspotConfigured) {
     throw new AppError(503, 'La integración con HubSpot no está configurada en el servidor todavía.')
@@ -102,29 +147,56 @@ export function buildAuthorizeUrl(state: string): string {
  * token responses can contain the very secrets this whole feature exists
  * to protect, so the body is only ever parsed and handed to a typed
  * validator, never logged as-is.
+ *
+ * Bounded to POSTFORM_TIMEOUT_MS via AbortController, same pattern as
+ * revokeRefreshToken() below — a hung HubSpot response can no longer leave
+ * a caller (the OAuth callback, or the sync flow's token refresh) waiting
+ * indefinitely. The timer is always cleared in `finally`, whether the
+ * request settles in time, fails, or is aborted, so no timer is ever left
+ * running past this call.
+ *
+ * Every failure is thrown as a reason-tagged HubspotOauthError (see its doc
+ * comment above) rather than a plain AppError, so a caller like
+ * ensureFreshAccessToken() can tell a timeout/network hiccup apart from a
+ * genuine rejection by HubSpot — this changes the error's *type*, never its
+ * `.message`/`.publicMessage` text for any case that already existed.
  */
 async function postForm(url: string, body: Record<string, string>, action: string): Promise<Record<string, unknown>> {
+  const controller = new AbortController()
+  const timeoutHandle = setTimeout(() => controller.abort(), POSTFORM_TIMEOUT_MS)
   let response: Response
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(body).toString(),
-    })
-  } catch {
-    logger.error(`HubSpot ${action} request failed`, { action })
-    throw new AppError(502, 'No se pudo contactar a HubSpot. Inténtalo de nuevo.')
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(body).toString(),
+        signal: controller.signal,
+      })
+    } catch (error) {
+      const isTimeout = error instanceof Error && error.name === 'AbortError'
+      logger.error(isTimeout ? `HubSpot ${action} request timed out` : `HubSpot ${action} request failed`, { action })
+      throw new HubspotOauthError(
+        isTimeout ? 504 : 502,
+        isTimeout
+          ? 'Se agotó el tiempo de espera al contactar a HubSpot. Inténtalo de nuevo.'
+          : 'No se pudo contactar a HubSpot. Inténtalo de nuevo.',
+        isTimeout ? 'timeout' : 'network_error',
+      )
+    }
+  } finally {
+    clearTimeout(timeoutHandle)
   }
 
   if (!response.ok) {
     logger.error(`HubSpot ${action} returned an error status`, { action, status: response.status })
-    throw new AppError(502, 'HubSpot rechazó la solicitud. Inténtalo de nuevo.')
+    throw new HubspotOauthError(502, 'HubSpot rechazó la solicitud. Inténtalo de nuevo.', 'rejected')
   }
 
   try {
     return (await response.json()) as Record<string, unknown>
   } catch {
-    throw new AppError(502, 'HubSpot devolvió una respuesta inesperada.')
+    throw new HubspotOauthError(502, 'HubSpot devolvió una respuesta inesperada.', 'invalid_response')
   }
 }
 
@@ -133,10 +205,10 @@ function parseTokenResponse(json: Record<string, unknown>, context: string): { a
   const accessToken = json.access_token
   const expiresIn = json.expires_in
   if (typeof accessToken !== 'string' || accessToken.length === 0) {
-    throw new AppError(502, `HubSpot no devolvió un token de acceso válido (${context}).`)
+    throw new HubspotOauthError(502, `HubSpot no devolvió un token de acceso válido (${context}).`, 'invalid_response')
   }
   if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-    throw new AppError(502, `HubSpot no devolvió una expiración de token válida (${context}).`)
+    throw new HubspotOauthError(502, `HubSpot no devolvió una expiración de token válida (${context}).`, 'invalid_response')
   }
   const refreshToken = typeof json.refresh_token === 'string' && json.refresh_token.length > 0 ? json.refresh_token : null
   return { accessToken, expiresInSeconds: expiresIn, refreshToken }
@@ -158,7 +230,7 @@ export async function exchangeCodeForTokens(code: string): Promise<ExchangedToke
   )
   const parsed = parseTokenResponse(json, 'intercambio de código')
   if (!parsed.refreshToken) {
-    throw new AppError(502, 'HubSpot no devolvió un token de actualización válido.')
+    throw new HubspotOauthError(502, 'HubSpot no devolvió un token de actualización válido.', 'invalid_response')
   }
   return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken, expiresInSeconds: parsed.expiresInSeconds }
 }
@@ -201,7 +273,7 @@ export async function fetchHubPortalId(accessToken: string): Promise<string> {
   )
   const hubId = json.hub_id
   if (typeof hubId !== 'number' && typeof hubId !== 'string') {
-    throw new AppError(502, 'HubSpot no devolvió el identificador del portal conectado.')
+    throw new HubspotOauthError(502, 'HubSpot no devolvió el identificador del portal conectado.', 'invalid_response')
   }
   return String(hubId)
 }

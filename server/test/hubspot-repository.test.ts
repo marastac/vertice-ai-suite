@@ -61,12 +61,15 @@ describe('toPublicConnection', () => {
 // logic of its own — hubspotRepository's functions are plain data-access
 // helpers, exactly like webhookRepository's, and none of them take a role
 // or perform an authorization decision (that responsibility belongs
-// entirely to the route layer via requireAdminRole(), added in a later
-// phase — see webhook-auth.ts for the existing pattern this will reuse).
-// There is therefore no new function in this phase that could grant
+// entirely to the route layer via requireAdminRole()/requireEditorRole(),
+// added in later phases — see webhook-auth.ts for the existing pattern
+// this reuses). There is therefore no function here that could grant
 // member/viewer administrative access — confirmed here by asserting the
 // repository's public surface is limited to plain CRUD, with no
-// role-aware or role-bypassing export.
+// role-aware or role-bypassing export. Updated for the manual-sync phase,
+// which added getLeadForSync() (reads a lead scoped to organization_id,
+// still no role parameter) and updateTokensAfterRefresh() (a narrower
+// token-only write than upsertConnection(), also role-agnostic).
 describe('hubspotRepository has no role-aware exports', () => {
   it('exposes only data-access functions, none of which accept a role/permission parameter', async () => {
     const { hubspotRepository } = await import('../src/repositories/hubspot-repository.js')
@@ -76,8 +79,10 @@ describe('hubspotRepository has no role-aware exports', () => {
         'getConnection',
         'getPublicConnection',
         'upsertConnection',
+        'updateTokensAfterRefresh',
         'setNeedsReauth',
         'deleteConnection',
+        'getLeadForSync',
         'getContactLink',
         'upsertContactLink',
         'createOauthState',

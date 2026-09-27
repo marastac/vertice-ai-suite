@@ -1,4 +1,4 @@
-import type { HubspotConnection } from './types'
+import type { HubspotConnection, HubspotContactLink, HubspotSyncResult } from './types'
 
 // Same pattern as entities/webhook/api-client.ts — the Express backend
 // this frontend calls directly.
@@ -70,4 +70,40 @@ export async function disconnectHubspot(accessToken: string, organizationId: str
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, 'No se pudo desconectar HubSpot.'))
   }
+}
+
+/**
+ * Owner/admin/member — the backend re-verifies this via requireEditorRole(),
+ * never trusts the caller (see server/src/routes/hubspot.ts). Sends ONLY
+ * `organizationId`; the lead's actual fields (name, email, phone, company)
+ * are loaded server-side from `leadId` alone — this function must never be
+ * changed to also send lead data in the body.
+ */
+export async function syncLeadToHubspot(accessToken: string, organizationId: string, leadId: string): Promise<HubspotSyncResult> {
+  const response = await fetch(`${API_BASE_URL}/api/hubspot/leads/${encodeURIComponent(leadId)}/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(accessToken) },
+    body: JSON.stringify({ organizationId }),
+  })
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'No se pudo sincronizar el lead con HubSpot.'))
+  }
+  return (await response.json()) as HubspotSyncResult
+}
+
+interface ContactLinkResponseBody {
+  contactLink: HubspotContactLink | null
+}
+
+/** Any organization role may call this — the backend's GET endpoint only requires membership, not the editor threshold (see server/src/routes/hubspot.ts). `contactLink: null` means "never synced", not an error. */
+export async function fetchHubspotContactLink(accessToken: string, organizationId: string, leadId: string): Promise<HubspotContactLink | null> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/hubspot/leads/${encodeURIComponent(leadId)}/contact-link?organizationId=${encodeURIComponent(organizationId)}`,
+    { headers: authHeaders(accessToken) },
+  )
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'No se pudo cargar el estado de sincronización con HubSpot.'))
+  }
+  const data = (await response.json()) as ContactLinkResponseBody
+  return data.contactLink
 }

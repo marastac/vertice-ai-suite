@@ -38,6 +38,23 @@ export interface HubspotConnectionRow {
   updated_at: string
 }
 
+/**
+ * The ONLY fields the sync flow needs, read directly from `leads` with the
+ * service_role client — never trusted from anything the browser sends. See
+ * getLeadForSync() below: the WHERE clause matches on `id` AND
+ * `organization_id` together, so a lead belonging to a different
+ * organization than the caller's simply doesn't come back, exactly like a
+ * 404 for "doesn't exist at all" — the caller (hubspot-sync-service.ts)
+ * doesn't need to and shouldn't distinguish the two cases.
+ */
+export interface LeadForSyncRow {
+  id: string
+  name: string
+  email: string
+  phone: string | null
+  company: string
+}
+
 export interface HubspotContactLinkRow {
   id: string
   organization_id: string
@@ -47,6 +64,31 @@ export interface HubspotContactLinkRow {
   last_sync_status: 'synced' | 'failed'
   last_sync_error: string | null
   created_at: string
+}
+
+/**
+ * Safe to return to the browser — deliberately omits `id`/`organization_id`/
+ * `lead_id`/`created_at` (the caller already knows which lead/organization
+ * this is; nothing here is a secret, but there's no reason to hand back
+ * internal row/foreign-key ids the UI never needs either). This is the ONLY
+ * shape a route handler may send for a contact link; see
+ * toPublicContactLink() below, the single function allowed to build it —
+ * same pattern as toPublicConnection() above.
+ */
+export interface HubspotContactLinkPublic {
+  hubspotContactId: string
+  lastSyncedAt: string
+  lastSyncStatus: 'synced' | 'failed'
+  lastSyncError: string | null
+}
+
+export function toPublicContactLink(row: HubspotContactLinkRow): HubspotContactLinkPublic {
+  return {
+    hubspotContactId: row.hubspot_contact_id,
+    lastSyncedAt: row.last_synced_at,
+    lastSyncStatus: row.last_sync_status,
+    lastSyncError: row.last_sync_error,
+  }
 }
 
 /** Internal-only — the OAuth CSRF state row. Never returned to a route handler's JSON response; consumeOauthState() below only ever returns the two fields a callback actually needs. */
@@ -167,6 +209,50 @@ export const hubspotRepository = {
   async deleteConnection(organizationId: string): Promise<void> {
     const { error } = await client().from('hubspot_connections').delete().eq('organization_id', organizationId)
     if (error) throw new AppError(500, 'No se pudo eliminar la conexión de HubSpot.', error.message)
+  },
+
+  /**
+   * Reads the lead the sync flow will send to HubSpot, scoped to BOTH
+   * `leadId` and `organizationId` in the same query — a leadId that exists
+   * but belongs to a different organization returns `null`, identically to
+   * a leadId that doesn't exist at all. This is the one place the sync
+   * service ever reads lead data; it never accepts lead fields (name,
+   * email, phone, company) from the request body, only the id.
+   */
+  async getLeadForSync(organizationId: string, leadId: string): Promise<LeadForSyncRow | null> {
+    const { data, error } = await client()
+      .from('leads')
+      .select('id, name, email, phone, company')
+      .eq('id', leadId)
+      .eq('organization_id', organizationId)
+      .maybeSingle()
+    if (error) throw new AppError(500, 'No se pudo leer el lead a sincronizar.', error.message)
+    return (data as LeadForSyncRow) ?? null
+  },
+
+  /**
+   * Persists a freshly refreshed token pair after a successful
+   * refreshAccessToken() call — a narrower write than upsertConnection()
+   * (which also requires hub_portal_id/scopes/connectedBy, none of which
+   * change on a refresh). Also clears `needs_reauth` back to false: a
+   * refresh that just succeeded means the connection is healthy again,
+   * regardless of what it was before.
+   */
+  async updateTokensAfterRefresh(
+    organizationId: string,
+    params: { accessTokenEncrypted: string; refreshTokenEncrypted: string; accessTokenExpiresAt: string },
+  ): Promise<void> {
+    const { error } = await client()
+      .from('hubspot_connections')
+      .update({
+        access_token_encrypted: params.accessTokenEncrypted,
+        refresh_token_encrypted: params.refreshTokenEncrypted,
+        access_token_expires_at: params.accessTokenExpiresAt,
+        needs_reauth: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('organization_id', organizationId)
+    if (error) throw new AppError(500, 'No se pudo guardar el token renovado de HubSpot.', error.message)
   },
 
   async getContactLink(organizationId: string, leadId: string): Promise<HubspotContactLinkRow | null> {

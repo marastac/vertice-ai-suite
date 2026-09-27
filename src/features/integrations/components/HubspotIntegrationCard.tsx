@@ -73,8 +73,8 @@ export function HubspotIntegrationCard() {
             <CardTitle>HubSpot CRM</CardTitle>
             <CardDescription className="mt-1">
               {connection
-                ? `Conectado al portal de HubSpot ${connection.hubPortalId}. El envío manual de leads como contactos estará disponible próximamente.`
-                : 'Conecta tu cuenta de HubSpot CRM. El envío manual de leads como contactos estará disponible próximamente.'}
+                ? `Conectado al portal de HubSpot ${connection.hubPortalId}. Desde el detalle de cada lead puedes enviarlo manualmente como contacto.`
+                : 'Conecta tu cuenta de HubSpot CRM para poder enviar tus leads como contactos manualmente desde el detalle de cada uno.'}
             </CardDescription>
           </div>
 

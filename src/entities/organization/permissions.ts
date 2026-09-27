@@ -141,3 +141,16 @@ export function canManageWebhooks(role: OrganizationRole | null): boolean {
 export function canManageHubspot(role: OrganizationRole | null): boolean {
   return role === 'owner' || role === 'admin'
 }
+
+/**
+ * Mirrors requireEditorRole() on the backend (server/src/services/
+ * webhook-auth.ts) and, transitively, canEditLeads() above — the exact
+ * same threshold: syncing a lead to HubSpot is an action on a lead the
+ * caller can already edit, not an action on the HubSpot integration itself
+ * (that stays canManageHubspot()'s owner/admin-only threshold, unchanged).
+ * A viewer can see a lead's HubSpot sync status (read is open to every
+ * role, matching GET /leads/:leadId/contact-link) but never trigger a sync.
+ */
+export function canSyncLeadToHubspot(role: OrganizationRole | null): boolean {
+  return role !== null && role !== 'viewer'
+}

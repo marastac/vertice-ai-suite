@@ -28,6 +28,7 @@ import type { LeadFormValues, LeadStatus } from '@/entities/lead'
 import { LeadForm } from './components/LeadForm'
 import { LeadTranscriptCard } from './components/LeadTranscriptCard'
 import { LeadQualificationCard } from './components/LeadQualificationCard'
+import { HubspotLeadSyncCard } from './components/HubspotLeadSyncCard'
 
 export function LeadDetailPage() {
   const { role } = useOrganization()
@@ -300,6 +301,8 @@ export function LeadDetailPage() {
               <p className="text-sm text-slate-300">{lead.notes || 'Sin notas todavía.'}</p>
             </CardContent>
           </Card>
+
+          <HubspotLeadSyncCard lead={lead} />
         </div>
       </div>
 

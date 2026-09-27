@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertCircle, CheckCircle2, Link2 } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ExternalLink, Link2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/Card'
 import { Button } from '@/shared/ui/Button'
 import { canSyncLeadToHubspot, useOrganization } from '@/entities/organization'
@@ -63,6 +63,19 @@ export function HubspotLeadSyncCard({ lead }: HubspotLeadSyncCardProps) {
   const errorMessage = liveErrorMessage ?? persistedErrorMessage
   const isSynced = !errorMessage && contactLink?.lastSyncStatus === 'synced'
 
+  // Only ever built from the CURRENT connection's portal id and the
+  // CURRENT contact link's id — both already scoped to this
+  // organization/lead by their respective queries. If the connection was
+  // disconnected or reconnected to a different portal, the backend clears
+  // hubspot_contact_links for that organization (see routes/hubspot.ts's
+  // disconnectHubspotConnection()/handleOauthCallback()), so `contactLink`
+  // simply comes back `null` and this never renders a stale link — no
+  // extra staleness check is needed here beyond `isSynced` itself.
+  const hubspotContactUrl =
+    isSynced && connection?.hubPortalId && contactLink?.hubspotContactId
+      ? `https://app.hubspot.com/contacts/${connection.hubPortalId}/contact/${contactLink.hubspotContactId}`
+      : null
+
   // Same underlying action (call the sync mutation again) regardless of
   // label — "Actualizar" and "Reintentar" are just this button's copy for
   // an already-synced vs. a failed lead; a second upsert by the same email
@@ -108,6 +121,17 @@ export function HubspotLeadSyncCard({ lead }: HubspotLeadSyncCardProps) {
               <p>Sincronizado con HubSpot</p>
               {contactLink?.lastSyncedAt && (
                 <p className="text-xs text-emerald-400/80">Última sincronización: {formatLeadDateTime(contactLink.lastSyncedAt)}</p>
+              )}
+              {hubspotContactUrl && (
+                <a
+                  href={hubspotContactUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-emerald-300 hover:text-emerald-200"
+                >
+                  Ver contacto en HubSpot
+                  <ExternalLink className="size-3" />
+                </a>
               )}
             </div>
           </div>

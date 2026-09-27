@@ -69,7 +69,11 @@ describe('toPublicConnection', () => {
 // role-aware or role-bypassing export. Updated for the manual-sync phase,
 // which added getLeadForSync() (reads a lead scoped to organization_id,
 // still no role parameter) and updateTokensAfterRefresh() (a narrower
-// token-only write than upsertConnection(), also role-agnostic).
+// token-only write than upsertConnection(), also role-agnostic), and for
+// the resync/portal-binding phase, which added
+// deleteContactLinksForOrganization() (also role-agnostic — the
+// authorization decision for when to call it lives entirely in
+// routes/hubspot.ts).
 describe('hubspotRepository has no role-aware exports', () => {
   it('exposes only data-access functions, none of which accept a role/permission parameter', async () => {
     const { hubspotRepository } = await import('../src/repositories/hubspot-repository.js')
@@ -84,6 +88,7 @@ describe('hubspotRepository has no role-aware exports', () => {
         'deleteConnection',
         'getLeadForSync',
         'getContactLink',
+        'deleteContactLinksForOrganization',
         'upsertContactLink',
         'createOauthState',
         'consumeOauthState',

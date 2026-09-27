@@ -43,6 +43,7 @@ interface Mocks {
   getConnection?: ReturnType<typeof vi.fn>
   deleteConnection?: ReturnType<typeof vi.fn>
   getContactLink?: ReturnType<typeof vi.fn>
+  deleteContactLinksForOrganization?: ReturnType<typeof vi.fn>
   requireOrganizationMembership?: ReturnType<typeof vi.fn>
   requireAdminRole?: ReturnType<typeof vi.fn>
   exchangeCodeForTokens?: ReturnType<typeof vi.fn>
@@ -66,6 +67,7 @@ async function loadRoutesWithMocks(mocks: Mocks) {
       setNeedsReauth: vi.fn(),
       getLeadForSync: vi.fn(),
       getContactLink: mocks.getContactLink ?? vi.fn(),
+      deleteContactLinksForOrganization: mocks.deleteContactLinksForOrganization ?? vi.fn().mockResolvedValue(undefined),
       upsertContactLink: vi.fn(),
       createOauthState: vi.fn(),
     },
@@ -114,12 +116,14 @@ async function loadRoutesWithMocks(mocks: Mocks) {
 }
 
 describe('handleOauthCallback', () => {
-  it('stores the connection and returns "connected" for a valid, complete flow', async () => {
+  it('stores the connection and returns "connected" for a valid, complete flow (fresh connect, no prior connection)', async () => {
     const consumeOauthState = vi.fn().mockResolvedValue({ organizationId: 'org-1', userId: 'user-1' })
     const upsertConnection = vi.fn().mockResolvedValue({})
     const requireOrganizationMembership = vi.fn().mockResolvedValue('admin')
     const exchangeCodeForTokens = vi.fn().mockResolvedValue({ accessToken: 'fake-access', refreshToken: 'fake-refresh', expiresInSeconds: 1800 })
     const fetchHubPortalId = vi.fn().mockResolvedValue('12345678')
+    const getConnection = vi.fn().mockResolvedValue(null)
+    const deleteContactLinksForOrganization = vi.fn().mockResolvedValue(undefined)
 
     const { handleOauthCallback } = await loadRoutesWithMocks({
       consumeOauthState,
@@ -127,6 +131,8 @@ describe('handleOauthCallback', () => {
       requireOrganizationMembership,
       exchangeCodeForTokens,
       fetchHubPortalId,
+      getConnection,
+      deleteContactLinksForOrganization,
     })
 
     const status = await handleOauthCallback({ state: 'fake-state', code: 'fake-code' })
@@ -134,6 +140,59 @@ describe('handleOauthCallback', () => {
     expect(upsertConnection).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: 'org-1', connectedBy: 'user-1', hubPortalId: '12345678' }),
     )
+    // Self-healing clear — no prior connection existed, so any orphaned
+    // links (e.g. from a disconnect whose own cleanup previously failed)
+    // are defensively cleared before the fresh connection is stored.
+    expect(deleteContactLinksForOrganization).toHaveBeenCalledWith('org-1')
+  })
+
+  it('PORTAL BINDING: reconnecting to a DIFFERENT portal (no disconnect in between) clears the organization\'s contact links before storing the new connection', async () => {
+    const consumeOauthState = vi.fn().mockResolvedValue({ organizationId: 'org-1', userId: 'user-1' })
+    const upsertConnection = vi.fn().mockResolvedValue({})
+    const exchangeCodeForTokens = vi.fn().mockResolvedValue({ accessToken: 'fake-access', refreshToken: 'fake-refresh', expiresInSeconds: 1800 })
+    const fetchHubPortalId = vi.fn().mockResolvedValue('NEW-PORTAL-999') // different from the existing connection below
+    const getConnection = vi.fn().mockResolvedValue({ organization_id: 'org-1', hub_portal_id: 'OLD-PORTAL-111' })
+    const deleteContactLinksForOrganization = vi.fn().mockResolvedValue(undefined)
+
+    const { handleOauthCallback } = await loadRoutesWithMocks({
+      consumeOauthState,
+      upsertConnection,
+      exchangeCodeForTokens,
+      fetchHubPortalId,
+      getConnection,
+      deleteContactLinksForOrganization,
+    })
+
+    const status = await handleOauthCallback({ state: 'fake-state', code: 'fake-code' })
+    expect(status).toBe('connected')
+    expect(deleteContactLinksForOrganization).toHaveBeenCalledWith('org-1')
+    // Cleared BEFORE the new connection overwrites the old portal id.
+    const clearOrder = deleteContactLinksForOrganization.mock.invocationCallOrder[0]
+    const upsertOrder = upsertConnection.mock.invocationCallOrder[0]
+    expect(clearOrder).toBeLessThan(upsertOrder)
+  })
+
+  it('PORTAL BINDING: reconnecting to the SAME portal (e.g. fixing needs_reauth) does NOT clear the organization\'s contact links', async () => {
+    const consumeOauthState = vi.fn().mockResolvedValue({ organizationId: 'org-1', userId: 'user-1' })
+    const upsertConnection = vi.fn().mockResolvedValue({})
+    const exchangeCodeForTokens = vi.fn().mockResolvedValue({ accessToken: 'fake-access', refreshToken: 'fake-refresh', expiresInSeconds: 1800 })
+    const fetchHubPortalId = vi.fn().mockResolvedValue('SAME-PORTAL-111')
+    const getConnection = vi.fn().mockResolvedValue({ organization_id: 'org-1', hub_portal_id: 'SAME-PORTAL-111' })
+    const deleteContactLinksForOrganization = vi.fn().mockResolvedValue(undefined)
+
+    const { handleOauthCallback } = await loadRoutesWithMocks({
+      consumeOauthState,
+      upsertConnection,
+      exchangeCodeForTokens,
+      fetchHubPortalId,
+      getConnection,
+      deleteContactLinksForOrganization,
+    })
+
+    const status = await handleOauthCallback({ state: 'fake-state', code: 'fake-code' })
+    expect(status).toBe('connected')
+    expect(deleteContactLinksForOrganization).not.toHaveBeenCalled()
+    expect(upsertConnection).toHaveBeenCalled()
   })
 
   it('returns "error" and never exchanges a code when the state cannot be consumed (expired, reused, or unknown) — consumeOauthState returning null is the zero-rows case', async () => {
@@ -203,15 +262,39 @@ describe('handleOauthCallback', () => {
 })
 
 describe('disconnectHubspotConnection — deletes ONLY on a confirmed 2xx revoke; conserves otherwise', () => {
-  it('deletes the local connection when HubSpot confirms the revoke (revoked: true)', async () => {
+  it('deletes the local connection when HubSpot confirms the revoke (revoked: true), and clears the organization\'s contact links (never any real HubSpot contact)', async () => {
     const getConnection = vi.fn().mockResolvedValue({ refresh_token_encrypted: 'enc:fake-refresh' })
     const deleteConnection = vi.fn().mockResolvedValue(undefined)
     const revokeRefreshToken = vi.fn().mockResolvedValue({ revoked: true })
+    const deleteContactLinksForOrganization = vi.fn().mockResolvedValue(undefined)
 
-    const { disconnectHubspotConnection } = await loadRoutesWithMocks({ getConnection, deleteConnection, revokeRefreshToken })
+    const { disconnectHubspotConnection } = await loadRoutesWithMocks({
+      getConnection,
+      deleteConnection,
+      revokeRefreshToken,
+      deleteContactLinksForOrganization,
+    })
 
     const result = await disconnectHubspotConnection('org-1')
     expect(result).toEqual({ disconnected: true, revoked: true })
+    expect(deleteConnection).toHaveBeenCalledWith('org-1')
+    expect(deleteContactLinksForOrganization).toHaveBeenCalledWith('org-1')
+  })
+
+  it('still reports a successful disconnect even if clearing contact links fails — the security-critical part (revoke + delete) already succeeded', async () => {
+    const getConnection = vi.fn().mockResolvedValue({ refresh_token_encrypted: 'enc:fake-refresh' })
+    const deleteConnection = vi.fn().mockResolvedValue(undefined)
+    const revokeRefreshToken = vi.fn().mockResolvedValue({ revoked: true })
+    const deleteContactLinksForOrganization = vi.fn().mockRejectedValue(new Error('transient DB error'))
+
+    const { disconnectHubspotConnection } = await loadRoutesWithMocks({
+      getConnection,
+      deleteConnection,
+      revokeRefreshToken,
+      deleteContactLinksForOrganization,
+    })
+
+    await expect(disconnectHubspotConnection('org-1')).resolves.toEqual({ disconnected: true, revoked: true })
     expect(deleteConnection).toHaveBeenCalledWith('org-1')
   })
 

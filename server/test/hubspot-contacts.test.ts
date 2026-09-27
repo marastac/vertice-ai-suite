@@ -249,3 +249,140 @@ describe('upsertHubspotContact', () => {
     await expect(upsertHubspotContact('fake-access-token', { email: 'lead@example.test' })).rejects.toThrow(/respuesta con errores/i)
   })
 })
+
+// updateHubspotContactById() — the by-ID update path used for every resync
+// (see hubspot-sync-service.ts). Response classification is deliberately
+// layered (status code OR category), never hard-coded to one exact status.
+describe('updateHubspotContactById', () => {
+  it('PATCHes the single-object endpoint with the contact id in the URL, Bearer auth, and JSON content-type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: 'hs-contact-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    const result = await updateHubspotContactById('fake-access-token', 'hs-contact-1', { email: 'ana@example.test', firstname: 'Ana' })
+
+    expect(result).toEqual({ outcome: 'updated', hubspotContactId: 'hs-contact-1' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.hubapi.com/crm/v3/objects/contacts/hs-contact-1')
+    expect(init.method).toBe('PATCH')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer fake-access-token')
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json')
+
+    const body = JSON.parse(init.body as string)
+    expect(body).toEqual({ properties: { email: 'ana@example.test', firstname: 'Ana' } })
+    // Never a search/upsert-by-email body shape (no `inputs`/`idProperty`).
+    expect(body).not.toHaveProperty('inputs')
+    expect(body).not.toHaveProperty('idProperty')
+  })
+
+  it('URL-encodes the contact id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: '123' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await updateHubspotContactById('fake-access-token', 'weird id/with slash', { email: 'a@example.test' })
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toBe('https://api.hubapi.com/crm/v3/objects/contacts/weird%20id%2Fwith%20slash')
+  })
+
+  it('returns { outcome: "not_found" } on a plain 404 — never throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({ status: 'error', category: 'OBJECT_NOT_FOUND' }) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).resolves.toEqual({ outcome: 'not_found' })
+  })
+
+  it('returns { outcome: "not_found" } on a non-404 status whose body category is OBJECT_NOT_FOUND (defensive layering)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ status: 'error', category: 'OBJECT_NOT_FOUND' }) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).resolves.toEqual({ outcome: 'not_found' })
+  })
+
+  it('returns { outcome: "conflict", message } on a plain 409 — never throws, never leaks HubSpot\'s raw message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({ status: 'error', category: 'CONFLICT', message: 'Contact already exists with email secret@example.test' }),
+      }),
+    )
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    const result = await updateHubspotContactById('fake-access-token', 'hs-1', { email: 'secret@example.test' })
+    expect(result.outcome).toBe('conflict')
+    expect(JSON.stringify(result)).not.toContain('secret@example.test')
+  })
+
+  it('returns { outcome: "conflict" } on a non-409 status whose body category is CONFLICT (defensive layering)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ status: 'error', category: 'CONFLICT' }) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    const result = await updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })
+    expect(result.outcome).toBe('conflict')
+  })
+
+  it('throws AppError (never returns not_found/conflict) for an unrecognized status/category — the safe default', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({ status: 'error', category: 'INTERNAL_ERROR' }) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/rechazó la actualización/i)
+  })
+
+  it('throws AppError for a 400 with no recognizable category at all', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ status: 'error' }) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/rechazó la actualización/i)
+  })
+
+  it('times out (AppError 504) when the request hangs, without logging the access token', async () => {
+    const loggerErrorSpy = vi.fn()
+    vi.doMock('../src/lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: loggerErrorSpy } }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => {
+        const abortError = new Error('The operation was aborted')
+        abortError.name = 'AbortError'
+        throw abortError
+      }),
+    )
+
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/tiempo de espera/i)
+
+    const loggedText = JSON.stringify(loggerErrorSpy.mock.calls)
+    expect(loggedText).not.toContain('fake-access-token')
+  })
+
+  it('throws AppError on a plain network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/no se pudo contactar/i)
+  })
+
+  it('throws AppError when the success response has no usable id', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/identificador de contacto válido/i)
+  })
+
+  it('throws AppError when the response body is not valid JSON on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('not json') } }))
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await expect(updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })).rejects.toThrow(/respuesta inesperada/i)
+  })
+
+  it('never logs the response body on an error status — only status and category', async () => {
+    const loggerSpy = vi.fn()
+    vi.doMock('../src/lib/logger.js', () => ({ logger: { info: vi.fn(), warn: loggerSpy, error: loggerSpy } }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ status: 'error', category: 'OBJECT_NOT_FOUND', message: 'No contact with id secret@example.test' }),
+      }),
+    )
+    const { updateHubspotContactById } = await import('../src/services/hubspot-contacts.js')
+    await updateHubspotContactById('fake-access-token', 'hs-1', { email: 'a@example.test' })
+
+    const loggedText = JSON.stringify(loggerSpy.mock.calls)
+    expect(loggedText).not.toContain('secret@example.test')
+  })
+})

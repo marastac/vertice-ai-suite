@@ -104,6 +104,32 @@ export type OauthCallbackStatus = 'connected' | 'error'
  *      access never causes a token to be minted for nothing.
  *   5. Token exchange, portal-id lookup, encryption, and storage all
  *      succeed.
+ *
+ * Portal binding (step 5, just before storage): this callback is the ONLY
+ * place a connection's hub_portal_id can change — `/oauth/start` has no
+ * guard preventing a full reconnect while a healthy connection already
+ * exists (e.g. an admin clicking "Reconectar" after needs_reauth, or
+ * simply hitting /oauth/start again for any reason), and that reconnect
+ * can authorize a COMPLETELY DIFFERENT HubSpot account than before. Since
+ * hubspot_contact_links has no portal id of its own (and adding one would
+ * need a migration — deliberately not done, see
+ * hubspotRepository.deleteContactLinksForOrganization()'s doc comment),
+ * every previously-linked contact id becomes meaningless the moment the
+ * connected portal changes. Before ever calling upsertConnection() below:
+ *   - if there is NO existing connection row for this organization, its
+ *     contact links are cleared defensively/unconditionally — normally a
+ *     no-op (disconnectHubspotConnection() already clears them), and only
+ *     does real work in the narrow case where that cleanup previously
+ *     failed, self-healing it here rather than leaving stale links
+ *     attributed to an unknown prior portal.
+ *   - if an existing connection row's hub_portal_id differs from the
+ *     freshly-authorized one, its contact links are cleared too.
+ *   - if an existing connection row's hub_portal_id is the SAME, links
+ *     are left untouched (e.g. a token was merely revoked/expired and
+ *     re-authorized against the same HubSpot account — no reason to lose
+ *     valid sync history).
+ * This never calls HubSpot's API and never touches any actual HubSpot
+ * contact — only Lead AI's own local bookkeeping rows.
  */
 export async function handleOauthCallback(params: { state?: string; code?: string; error?: string }): Promise<OauthCallbackStatus> {
   if (!params.state) return 'error'
@@ -150,6 +176,14 @@ export async function handleOauthCallback(params: { state?: string; code?: strin
 
     const accessTokenEncrypted = encryptHubspotToken(tokens.accessToken, config.hubspotTokenEncryptionKey!)
     const refreshTokenEncrypted = encryptHubspotToken(tokens.refreshToken, config.hubspotTokenEncryptionKey!)
+
+    // Portal binding — see this function's doc comment above for the full
+    // reasoning. Must happen BEFORE upsertConnection() overwrites whatever
+    // hub_portal_id was previously on file.
+    const existingConnection = await hubspotRepository.getConnection(consumed.organizationId)
+    if (!existingConnection || existingConnection.hub_portal_id !== hubPortalId) {
+      await hubspotRepository.deleteContactLinksForOrganization(consumed.organizationId)
+    }
 
     await hubspotRepository.upsertConnection({
       organizationId: consumed.organizationId,
@@ -268,6 +302,30 @@ export async function disconnectHubspotConnection(organizationId: string): Promi
   }
 
   await hubspotRepository.deleteConnection(organizationId)
+
+  // Portal binding (part A — see handleOauthCallback()'s doc comment for
+  // part B): once disconnected, every existing hubspot_contact_links row
+  // for this organization is meaningless going forward — a future
+  // reconnect might authorize a completely different HubSpot account, and
+  // there is nothing in this table that records which portal a link was
+  // created against (see deleteContactLinksForOrganization()'s doc
+  // comment for why that's a deliberate, migration-free choice). This
+  // never calls HubSpot's API and never touches any actual HubSpot
+  // contact. Best-effort: a failure here must not undo the disconnect
+  // that already succeeded (the token is already revoked and the
+  // connection row already gone — the security-critical part is done),
+  // so it's logged rather than thrown; handleOauthCallback()'s own
+  // portal-binding check self-heals this exact gap on the next
+  // reconnect regardless of whether this step here succeeded.
+  try {
+    await hubspotRepository.deleteContactLinksForOrganization(organizationId)
+  } catch (error) {
+    logger.error('Failed to clear HubSpot contact links after disconnect — will self-heal on next reconnect', {
+      organizationId,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
   return { disconnected: true, revoked: true }
 }
 

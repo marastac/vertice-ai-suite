@@ -67,8 +67,20 @@ interface Mocks {
   upsertContactLink?: ReturnType<typeof vi.fn>
   refreshAccessToken?: ReturnType<typeof vi.fn>
   upsertHubspotContact?: ReturnType<typeof vi.fn>
+  updateHubspotContactById?: ReturnType<typeof vi.fn>
   decryptHubspotToken?: ReturnType<typeof vi.fn>
   encryptHubspotToken?: ReturnType<typeof vi.fn>
+}
+
+const EXISTING_LINK = {
+  id: 'link-1',
+  organization_id: 'org-1',
+  lead_id: 'lead-1',
+  hubspot_contact_id: 'hs-existing-contact',
+  last_synced_at: '2026-01-01T00:00:00.000Z',
+  last_sync_status: 'synced' as const,
+  last_sync_error: null,
+  created_at: '2026-01-01T00:00:00.000Z',
 }
 
 async function loadServiceWithMocks(mocks: Mocks) {
@@ -99,6 +111,8 @@ async function loadServiceWithMocks(mocks: Mocks) {
 
   vi.doMock('../src/services/hubspot-contacts.js', () => ({
     upsertHubspotContact: mocks.upsertHubspotContact ?? vi.fn().mockResolvedValue({ hubspotContactId: 'hs-contact-1' }),
+    updateHubspotContactById:
+      mocks.updateHubspotContactById ?? vi.fn().mockResolvedValue({ outcome: 'updated', hubspotContactId: EXISTING_LINK.hubspot_contact_id }),
   }))
 
   vi.doMock('../src/lib/hubspot-crypto.js', () => ({
@@ -141,16 +155,25 @@ describe('mapLeadToHubspotProperties', () => {
 })
 
 describe('syncLeadToHubspot', () => {
-  it('syncs successfully with a still-fresh access token — never calls refreshAccessToken', async () => {
+  it('FIRST sync (no existing link): upserts by email — never calls updateHubspotContactById', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(null)
     const refreshAccessToken = vi.fn()
     const upsertHubspotContact = vi.fn().mockResolvedValue({ hubspotContactId: 'hs-contact-1' })
+    const updateHubspotContactById = vi.fn()
     const upsertContactLink = vi.fn().mockResolvedValue({})
 
-    const { syncLeadToHubspot } = await loadServiceWithMocks({ refreshAccessToken, upsertHubspotContact, upsertContactLink })
+    const { syncLeadToHubspot } = await loadServiceWithMocks({
+      getContactLink,
+      refreshAccessToken,
+      upsertHubspotContact,
+      updateHubspotContactById,
+      upsertContactLink,
+    })
     const result = await syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })
 
     expect(result.hubspotContactId).toBe('hs-contact-1')
     expect(refreshAccessToken).not.toHaveBeenCalled()
+    expect(updateHubspotContactById).not.toHaveBeenCalled()
     expect(upsertHubspotContact).toHaveBeenCalledWith('fresh-access-token', {
       email: 'ana@example.test',
       firstname: 'Ana',
@@ -287,30 +310,6 @@ describe('syncLeadToHubspot', () => {
     expect(upsertHubspotContact).not.toHaveBeenCalled()
   })
 
-  it('records a failed sync against an existing link row, keeping its previous contact id', async () => {
-    const getContactLink = vi.fn().mockResolvedValue({ hubspot_contact_id: 'hs-previous-contact' })
-    const upsertContactLink = vi.fn().mockResolvedValue({})
-    const upsertHubspotContact = vi.fn().mockRejectedValue(new AppError(502, 'HubSpot rechazó la sincronización del contacto.'))
-
-    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, upsertContactLink, upsertHubspotContact })
-
-    // The rejection here originates from a mock (upsertHubspotContact)
-    // built with THIS test file's own AppError import, then re-thrown from
-    // inside the freshly re-imported service module — its own `instanceof
-    // AppError` check therefore doesn't recognize it as one (cross-module
-    // identity, same caveat as above), so it falls back to a generic
-    // message. Either way it's a rejection; the exact wording isn't the
-    // point of this test — the link-recording behavior below is.
-    await expect(syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })).rejects.toThrow()
-    expect(upsertContactLink).toHaveBeenCalledWith({
-      organizationId: 'org-1',
-      leadId: 'lead-1',
-      hubspotContactId: 'hs-previous-contact',
-      status: 'failed',
-      error: expect.any(String),
-    })
-  })
-
   it('writes no link row for a first-ever failure with no prior successful sync (hubspot_contact_id is NOT NULL)', async () => {
     const getContactLink = vi.fn().mockResolvedValue(null)
     const upsertContactLink = vi.fn()
@@ -338,5 +337,146 @@ describe('syncLeadToHubspot', () => {
     expect(loggedText).not.toContain('fresh-refresh-token')
 
     vi.doUnmock('../src/lib/logger.js')
+  })
+})
+
+// RESYNC — an existing hubspot_contact_links row is present. This is the
+// fix for the confirmed email-change defect: identifying the contact by
+// its known id (never by email again) so a lead's email can change and a
+// resync still updates the SAME HubSpot contact.
+describe('syncLeadToHubspot — resync with an existing link (update by id, never by email again)', () => {
+  it('SECOND sync (link exists): updates by hubspot_contact_id — never re-identifies by email', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const updateHubspotContactById = vi.fn().mockResolvedValue({ outcome: 'updated', hubspotContactId: EXISTING_LINK.hubspot_contact_id })
+    const upsertHubspotContact = vi.fn()
+    const upsertContactLink = vi.fn().mockResolvedValue({})
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, updateHubspotContactById, upsertHubspotContact, upsertContactLink })
+    const result = await syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })
+
+    expect(updateHubspotContactById).toHaveBeenCalledWith(
+      'fresh-access-token',
+      EXISTING_LINK.hubspot_contact_id,
+      expect.objectContaining({ email: 'ana@example.test' }),
+    )
+    expect(upsertHubspotContact).not.toHaveBeenCalled()
+    expect(result.hubspotContactId).toBe(EXISTING_LINK.hubspot_contact_id)
+    expect(upsertContactLink).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      leadId: 'lead-1',
+      hubspotContactId: EXISTING_LINK.hubspot_contact_id,
+      status: 'synced',
+      error: null,
+    })
+  })
+
+  it('a changed email updates the SAME contact by id — never creates/finds a different one by the new email', async () => {
+    // The lead's CURRENT email differs from whatever it was when it first
+    // synced — updateHubspotContactById() is still called with the SAME
+    // known contact id, and its properties simply carry the new email as a
+    // property to SET, never as a lookup key.
+    const changedEmailLead = { ...VALID_LEAD, email: 'ana.nueva@example.test' }
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const getLeadForSync = vi.fn().mockResolvedValue(changedEmailLead)
+    const updateHubspotContactById = vi.fn().mockResolvedValue({ outcome: 'updated', hubspotContactId: EXISTING_LINK.hubspot_contact_id })
+    const upsertHubspotContact = vi.fn()
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, getLeadForSync, updateHubspotContactById, upsertHubspotContact })
+    const result = await syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })
+
+    expect(updateHubspotContactById).toHaveBeenCalledWith(
+      'fresh-access-token',
+      EXISTING_LINK.hubspot_contact_id, // identified by id, not by the new email
+      expect.objectContaining({ email: 'ana.nueva@example.test' }),
+    )
+    expect(upsertHubspotContact).not.toHaveBeenCalled()
+    expect(result.hubspotContactId).toBe(EXISTING_LINK.hubspot_contact_id)
+  })
+
+  it('falls back to upsert-by-email when the known contact was deleted in HubSpot (not_found), and saves the NEW id', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const updateHubspotContactById = vi.fn().mockResolvedValue({ outcome: 'not_found' })
+    const upsertHubspotContact = vi.fn().mockResolvedValue({ hubspotContactId: 'hs-brand-new-contact' })
+    const upsertContactLink = vi.fn().mockResolvedValue({})
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, updateHubspotContactById, upsertHubspotContact, upsertContactLink })
+    const result = await syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })
+
+    expect(updateHubspotContactById).toHaveBeenCalledWith('fresh-access-token', EXISTING_LINK.hubspot_contact_id, expect.anything())
+    expect(upsertHubspotContact).toHaveBeenCalledWith('fresh-access-token', expect.objectContaining({ email: 'ana@example.test' }))
+    expect(result.hubspotContactId).toBe('hs-brand-new-contact')
+    expect(upsertContactLink).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      leadId: 'lead-1',
+      hubspotContactId: 'hs-brand-new-contact', // the link now points to the NEW id, not the stale one
+      status: 'synced',
+      error: null,
+    })
+  })
+
+  it('on a CONFLICT (new email collides with a different contact): never falls back, never creates another contact, never changes the stored id', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const updateHubspotContactById = vi.fn().mockResolvedValue({ outcome: 'conflict', message: 'Ya existe otro contacto en HubSpot con ese correo electrónico.' })
+    const upsertHubspotContact = vi.fn()
+    const upsertContactLink = vi.fn().mockResolvedValue({})
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, updateHubspotContactById, upsertHubspotContact, upsertContactLink })
+
+    await expect(syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })).rejects.toThrow(/ya existe otro contacto/i)
+    expect(upsertHubspotContact).not.toHaveBeenCalled()
+    // The ORIGINAL contact id is preserved — status flips to 'failed', but
+    // hubspot_contact_id is NEVER replaced by anything else.
+    expect(upsertContactLink).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      leadId: 'lead-1',
+      hubspotContactId: EXISTING_LINK.hubspot_contact_id,
+      status: 'failed',
+      error: expect.stringMatching(/ya existe otro contacto/i),
+    })
+  })
+
+  it('on a timeout/network error updating by id: never falls back to email upsert, and the existing link is preserved (marked failed, same id)', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const updateHubspotContactById = vi.fn().mockRejectedValue(new AppError(504, 'Se agotó el tiempo de espera al sincronizar con HubSpot.'))
+    const upsertHubspotContact = vi.fn()
+    const upsertContactLink = vi.fn().mockResolvedValue({})
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, updateHubspotContactById, upsertHubspotContact, upsertContactLink })
+
+    await expect(syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })).rejects.toThrow()
+    expect(upsertHubspotContact).not.toHaveBeenCalled()
+    expect(upsertContactLink).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      leadId: 'lead-1',
+      hubspotContactId: EXISTING_LINK.hubspot_contact_id,
+      status: 'failed',
+      error: expect.any(String),
+    })
+  })
+
+  it('never leaks the lead email/phone into logs when a conflict or timeout occurs during a resync', async () => {
+    const loggerErrorSpy = vi.fn()
+    const loggerWarnSpy = vi.fn()
+    vi.doMock('../src/lib/logger.js', () => ({ logger: { info: vi.fn(), warn: loggerWarnSpy, error: loggerErrorSpy } }))
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const updateHubspotContactById = vi.fn().mockRejectedValue(new AppError(502, 'No se pudo sincronizar el lead con HubSpot.'))
+
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink, updateHubspotContactById })
+    await expect(syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })).rejects.toThrow()
+
+    const loggedText = JSON.stringify([...loggerErrorSpy.mock.calls, ...loggerWarnSpy.mock.calls])
+    expect(loggedText).not.toContain(VALID_LEAD.email)
+    expect(loggedText).not.toContain(VALID_LEAD.phone)
+
+    vi.doUnmock('../src/lib/logger.js')
+  })
+
+  it('multi-tenant: resync decision reads the link scoped to THIS organizationId/leadId only', async () => {
+    const getContactLink = vi.fn().mockResolvedValue(EXISTING_LINK)
+    const { syncLeadToHubspot } = await loadServiceWithMocks({ getContactLink })
+
+    await syncLeadToHubspot({ organizationId: 'org-1', leadId: 'lead-1' })
+
+    expect(getContactLink).toHaveBeenCalledWith('org-1', 'lead-1')
   })
 })

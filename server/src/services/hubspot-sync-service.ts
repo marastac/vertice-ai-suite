@@ -6,17 +6,45 @@ import { hubspotRepository } from '../repositories/hubspot-repository.js'
 import type { HubspotConnectionRow, LeadForSyncRow } from '../repositories/hubspot-repository.js'
 import { isDefinitiveAuthRejection, refreshAccessToken } from './hubspot-oauth.js'
 import type { RefreshedTokens } from './hubspot-oauth.js'
-import { upsertHubspotContact } from './hubspot-contacts.js'
-import type { HubspotContactProperties } from './hubspot-contacts.js'
+import { updateHubspotContactById, upsertHubspotContact } from './hubspot-contacts.js'
+import type { HubspotContactProperties, UpdateContactByIdOutcome } from './hubspot-contacts.js'
 
 /**
- * Orchestrates the manual "Enviar a HubSpot" sync for one lead:
- * connection lookup -> needs_reauth check -> access-token freshness
- * (refresh if needed) -> load the lead server-side -> map to HubSpot
- * properties -> upsert by email -> record the outcome in
- * hubspot_contact_links. Extracted from the route handler so it's directly
- * testable without an HTTP harness, same pattern as
- * routes/hubspot.ts::handleOauthCallback()/disconnectHubspotConnection().
+ * Orchestrates the manual "Enviar a HubSpot"/"Actualizar en HubSpot" sync
+ * for one lead: connection lookup -> needs_reauth check -> load the lead
+ * server-side -> access-token freshness (refresh if needed) -> sync the
+ * contact -> record the outcome in hubspot_contact_links. Extracted from
+ * the route handler so it's directly testable without an HTTP harness,
+ * same pattern as routes/hubspot.ts::handleOauthCallback()/
+ * disconnectHubspotConnection().
+ *
+ * First sync vs. resync — this is the fix for a real, confirmed defect:
+ * upserting by email on EVERY sync meant that changing a lead's email and
+ * re-syncing could silently create a second HubSpot contact (the old one,
+ * still under the old email, orphaned) or — worse — attach to a
+ * completely unrelated existing contact that happens to share the new
+ * email. The strategy now depends on whether `hubspot_contact_links`
+ * already has a row for this lead:
+ *   - NO existing link (first-ever sync): upsertHubspotContact() (by
+ *     email) — unchanged from before. Correct here: there is no known
+ *     contact id yet, so identifying/creating by email is exactly what a
+ *     first sync should do.
+ *   - EXISTING link: updateHubspotContactById() — identifies the contact
+ *     by the id we already know, NEVER by email again, so a changed email
+ *     updates the SAME contact instead of finding/creating a different
+ *     one. Three sub-cases, per updateHubspotContactById()'s own doc
+ *     comment:
+ *     - `updated` -> done, link stays pointed at the same id.
+ *     - `not_found` (the known contact was deleted in HubSpot) -> falls
+ *       through to the same upsertHubspotContact() (by email) path as a
+ *       first sync, and the link is updated to whatever id comes back.
+ *     - `conflict` (the new email collides with a different existing
+ *       contact) -> never falls back, never changes the stored id, a
+ *       specific sanitized error is recorded and thrown instead.
+ *     - any OTHER failure (timeout, network error, an unrecognized
+ *       status/category) -> never falls back either; the existing link is
+ *       preserved exactly as it was, a generic sanitized error is
+ *       recorded and thrown.
  */
 
 // Refresh proactively once the stored access token is within this window of
@@ -206,6 +234,10 @@ export async function syncLeadToHubspot(params: SyncLeadToHubspotParams): Promis
     throw new AppError(400, 'Este lead no tiene un correo electrónico válido para sincronizar con HubSpot.')
   }
 
+  // Decided BEFORE touching the token/HubSpot at all — this is what
+  // chooses first-sync-by-email vs. resync-by-id below.
+  const existingLink = await hubspotRepository.getContactLink(organizationId, leadId)
+
   let accessToken: string
   try {
     accessToken = await ensureFreshAccessToken(organizationId, connection, key)
@@ -220,6 +252,43 @@ export async function syncLeadToHubspot(params: SyncLeadToHubspotParams): Promis
   }
 
   const properties = mapLeadToHubspotProperties(lead)
+
+  if (existingLink) {
+    let updateResult: UpdateContactByIdOutcome
+    try {
+      updateResult = await updateHubspotContactById(accessToken, existingLink.hubspot_contact_id, properties)
+    } catch (error) {
+      // Timeout, network error, or an unrecognized HubSpot response — NEVER
+      // falls back to upsert-by-email (that could create a duplicate or
+      // attach to an unrelated contact); the existing link is left exactly
+      // as it was, only its status/error are updated.
+      const message = error instanceof AppError ? error.publicMessage : 'No se pudo sincronizar el lead con HubSpot.'
+      await recordSyncFailure(organizationId, leadId, message)
+      throw error instanceof AppError ? error : new AppError(502, message)
+    }
+
+    if (updateResult.outcome === 'conflict') {
+      // A different existing HubSpot contact already has this email —
+      // never guess, never fall back, never touch the stored contact id.
+      await recordSyncFailure(organizationId, leadId, updateResult.message)
+      throw new AppError(409, updateResult.message)
+    }
+
+    if (updateResult.outcome === 'updated') {
+      await hubspotRepository.upsertContactLink({
+        organizationId,
+        leadId,
+        hubspotContactId: updateResult.hubspotContactId,
+        status: 'synced',
+        error: null,
+      })
+      return { hubspotContactId: updateResult.hubspotContactId, syncedAt: new Date().toISOString() }
+    }
+
+    // outcome === 'not_found' — the known contact was deleted in HubSpot.
+    // Falls through to the same upsert-by-email path a first-ever sync
+    // takes, below.
+  }
 
   try {
     const { hubspotContactId } = await upsertHubspotContact(accessToken, properties)

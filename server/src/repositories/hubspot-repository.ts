@@ -255,6 +255,27 @@ export const hubspotRepository = {
     if (error) throw new AppError(500, 'No se pudo guardar el token renovado de HubSpot.', error.message)
   },
 
+  /**
+   * Deletes EVERY hubspot_contact_links row for an organization — used
+   * whenever the organization's HubSpot connection no longer corresponds
+   * to the portal those links were created against (see
+   * routes/hubspot.ts's disconnectHubspotConnection() and
+   * handleOauthCallback() for the two call sites, and the "portal
+   * binding" note in hubspot-sync-service.ts's module doc comment for
+   * why). Never calls HubSpot's API — this only removes Lead AI's own
+   * local bookkeeping rows; no HubSpot contact is ever touched by this.
+   * Coarse by design: it clears ALL links for the organization rather
+   * than trying to identify which ones belong to the old portal, since
+   * `hubspot_contact_links` doesn't store a portal id at all (and adding
+   * one would require a migration) — once an organization's connection
+   * changes, every previously-linked contact id is equally meaningless
+   * going forward, so there is nothing to selectively preserve.
+   */
+  async deleteContactLinksForOrganization(organizationId: string): Promise<void> {
+    const { error } = await client().from('hubspot_contact_links').delete().eq('organization_id', organizationId)
+    if (error) throw new AppError(500, 'No se pudieron limpiar los vínculos de sincronización de HubSpot.', error.message)
+  },
+
   async getContactLink(organizationId: string, leadId: string): Promise<HubspotContactLinkRow | null> {
     const { data, error } = await client()
       .from('hubspot_contact_links')

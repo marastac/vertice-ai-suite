@@ -12,6 +12,18 @@ function parseOrigins(raw: string | undefined): string[] {
 
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY?.trim() || undefined
 
+// Technical protection, NOT a commercial plan limit — see
+// chat-service.ts::hasReachedMessageLimit(). Global for every organization,
+// same "plain constant, optionally env-overridden" pattern as PORT below.
+// Guards more than PORT's bare `|| fallback` would: a malformed or
+// non-positive value (e.g. "0", "-5", unset, garbage) must never silently
+// become a limit that blocks every conversation from its first message —
+// it falls back to 25 instead.
+const chatMaxUserMessagesPerConversation = (() => {
+  const parsed = Number(process.env.CHAT_MAX_USER_MESSAGES)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 25
+})()
+
 // Webhooks feature: the backend's own Supabase credentials, used only for
 // webhook_configurations/webhook_deliveries (config CRUD, the delivery
 // worker's claim/write). Nothing else in this backend touches Supabase.
@@ -55,6 +67,7 @@ export const config = {
   anthropicApiKey,
   anthropicModel: process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-4-8',
   isAiConfigured: Boolean(anthropicApiKey),
+  chatMaxUserMessagesPerConversation,
   supabaseUrl,
   supabaseServiceRoleKey,
   isWebhooksConfigured: Boolean(supabaseUrl && supabaseServiceRoleKey),

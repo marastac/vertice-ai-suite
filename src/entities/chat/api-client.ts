@@ -48,6 +48,15 @@ export interface StreamChatMessageHandlers {
   onQualification: (qualification: ChatQualificationResult | null) => void
   onDone: () => void
   onError: (message: string) => void
+  /**
+   * Fired instead of `onDelta`/`onQualification` when the backend's
+   * technical message-count protection has been reached (see
+   * server/src/services/chat-service.ts::hasReachedMessageLimit()) — this
+   * is a normal, expected end to the conversation, not an error. `message`
+   * is a ready-to-display, calm closing message; render it like a regular
+   * assistant reply, never like `onError`'s retryable failure banner.
+   */
+  onLimitReached: (message: string) => void
 }
 
 /**
@@ -103,6 +112,7 @@ export async function streamChatMessage(
       if (eventType === 'delta' && typeof data.text === 'string') handlers.onDelta(data.text)
       else if (eventType === 'qualification') handlers.onQualification((data.qualification as ChatQualificationResult) ?? null)
       else if (eventType === 'error' && typeof data.message === 'string') handlers.onError(data.message)
+      else if (eventType === 'conversation_limit_reached' && typeof data.message === 'string') handlers.onLimitReached(data.message)
       else if (eventType === 'done') handlers.onDone()
     }
   }

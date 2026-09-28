@@ -60,6 +60,11 @@ export function PublicChatPage() {
   const [connectError, setConnectError] = useState<string | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
   const [lastUserMessage, setLastUserMessage] = useState<string | null>(null)
+  // Set when the backend's technical message-count protection is reached
+  // (see server/src/services/chat-service.ts::hasReachedMessageLimit()) —
+  // a normal, expected end to the conversation, not an error. Disables the
+  // composer permanently for this session; never reset back to false.
+  const [conversationEnded, setConversationEnded] = useState(false)
 
   const hasCreatedSessionRef = useRef(false)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -116,7 +121,7 @@ export function PublicChatPage() {
   }
 
   async function sendMessage(text: string) {
-    if (!sessionId || isStreaming) return
+    if (!sessionId || isStreaming || conversationEnded) return
 
     setSendError(null)
     setLastUserMessage(text)
@@ -148,6 +153,18 @@ export function PublicChatPage() {
           void handleQualification(sessionId, qualification)
         },
         onError: (message) => setSendError(message),
+        onLimitReached: (message) => {
+          // Rendered as a normal assistant bubble (reusing the placeholder
+          // already created above for this turn), never as the red,
+          // retryable onError banner — this is an expected conversation
+          // end, not a failure. Setting assistantText here (not just the
+          // local state) means the existing post-stream logic below
+          // persists it to the display mirror exactly like any other
+          // assistant reply, with no special-casing needed there.
+          assistantText = message
+          setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, content: message } : m)))
+          setConversationEnded(true)
+        },
         onDone: () => {},
       },
       controller.signal,
@@ -294,7 +311,7 @@ export function PublicChatPage() {
       </div>
 
       <div className="mx-auto w-full max-w-2xl">
-        <ChatComposer disabled={isStreaming} onSend={sendMessage} />
+        <ChatComposer disabled={isStreaming || conversationEnded} onSend={sendMessage} />
         <p className="flex items-center justify-center gap-1.5 px-4 pb-4 text-center text-[11px] text-slate-500">
           <ShieldCheck className="size-3.5 shrink-0" />
           Esta conversación puede ser compartida con el equipo detrás de este chat para dar seguimiento a tu solicitud. No

@@ -4,7 +4,7 @@ import { AppError } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { createSessionBodySchema, postMessageBodySchema } from '../schemas/chat.js'
 import { aiProvider } from '../services/ai-provider.js'
-import { createSession, extractQualification, getSession, streamAssistantReply } from '../services/chat-service.js'
+import { createSession, getSession, handleIncomingMessage } from '../services/chat-service.js'
 
 export const chatRouter = Router()
 
@@ -84,12 +84,11 @@ chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, nex
     }
 
     try {
-      for await (const delta of streamAssistantReply(session, parsedBody.data.message, controller.signal)) {
-        sendEvent('delta', { text: delta })
-      }
-
-      const qualification = await extractQualification(session, controller.signal)
-      sendEvent('qualification', { qualification })
+      await handleIncomingMessage(session, parsedBody.data.message, controller.signal, {
+        onDelta: (text) => sendEvent('delta', { text }),
+        onQualification: (qualification) => sendEvent('qualification', { qualification }),
+        onLimitReached: (message) => sendEvent('conversation_limit_reached', { message }),
+      })
       sendEvent('done', {})
     } catch (streamError) {
       logger.error('Chat stream failed', {

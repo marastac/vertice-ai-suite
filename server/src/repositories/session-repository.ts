@@ -3,11 +3,33 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ChatConfigurationInput, ChatQualificationResult } from '../schemas/chat.js'
 import type { ChatTurn } from '../services/ai-provider.js'
+import type { OrganizationResolution } from '../services/organization-lookup.js'
 import { logger } from '../lib/logger.js'
 
 export interface StoredSession {
   id: string
   orgSlug: string
+  /**
+   * This session's organization attribution — see
+   * services/organization-lookup.ts::OrganizationResolution for the four
+   * possible states and exactly what each means for whether Anthropic may
+   * be called and whether usage may be recorded. Set at creation time
+   * (`createSession()` already rejects a brand-new `not_found` outright —
+   * see its own doc comment — so this field can only ever start out as
+   * `resolved`/`not_configured`/`unavailable`) and re-settled per-message
+   * whenever it's still `'unavailable'` (never for `'resolved'`,
+   * `'not_configured'`, or `'not_found'`, all three of which are treated
+   * as final once reached) — see chat-service.ts::ensureOrganizationResolved().
+   *
+   * A session already on disk from before this field existed (or from
+   * before it had this exact shape) simply reads back as `undefined` at
+   * runtime — never a crash, since every read of this field is a safe
+   * optional-chained check, and ensureOrganizationResolved() treats
+   * `undefined` exactly like `'unavailable'`: worth a fresh resolution
+   * attempt before spending any new tokens, never a reason to break the
+   * conversation.
+   */
+  organization: OrganizationResolution
   config: ChatConfigurationInput
   createdAt: string
   updatedAt: string
@@ -22,10 +44,12 @@ export interface StoredSession {
  * that depend on it.
  */
 export interface SessionRepository {
-  create(orgSlug: string, config: ChatConfigurationInput): StoredSession
+  create(orgSlug: string, config: ChatConfigurationInput, organization: OrganizationResolution): StoredSession
   get(id: string): StoredSession | undefined
   appendTurn(id: string, turn: ChatTurn): void
   setQualification(id: string, result: ChatQualificationResult): void
+  /** Persists a freshly re-attempted organization resolution — see chat-service.ts::ensureOrganizationResolved(). */
+  setOrganization(id: string, organization: OrganizationResolution): void
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data')
@@ -57,11 +81,12 @@ class FileSessionRepository implements SessionRepository {
     writeFileSync(DATA_FILE, JSON.stringify([...this.sessions.entries()]))
   }
 
-  create(orgSlug: string, config: ChatConfigurationInput): StoredSession {
+  create(orgSlug: string, config: ChatConfigurationInput, organization: OrganizationResolution): StoredSession {
     const now = new Date().toISOString()
     const session: StoredSession = {
       id: randomUUID(),
       orgSlug,
+      organization,
       config,
       createdAt: now,
       updatedAt: now,
@@ -88,6 +113,14 @@ class FileSessionRepository implements SessionRepository {
     const session = this.sessions.get(id)
     if (!session) return
     session.qualification = result
+    session.updatedAt = new Date().toISOString()
+    this.persist()
+  }
+
+  setOrganization(id: string, organization: OrganizationResolution): void {
+    const session = this.sessions.get(id)
+    if (!session) return
+    session.organization = organization
     session.updatedAt = new Date().toISOString()
     this.persist()
   }

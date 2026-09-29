@@ -1480,3 +1480,30 @@ create index if not exists hubspot_oauth_states_expires_at_idx
 
 alter table hubspot_oauth_states enable row level security;
 -- Deliberately zero policies — see migrations-hubspot-oauth-state.sql.
+
+-- ── Fase B: usage_events (medición real de consumo de Anthropic) ──────────
+-- Mirrors supabase/migrations-usage-events.sql exactly — see that file for
+-- the full reasoning (why session_id is uuid with no FK to chat_sessions,
+-- why there's no INSERT/UPDATE/DELETE policy for anon/authenticated).
+-- Purely additive, no changes to any table/policy above.
+create table if not exists usage_events (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  session_id uuid not null,
+  purpose text not null check (purpose in ('reply', 'extraction')),
+  model text not null,
+  input_tokens integer not null check (input_tokens >= 0),
+  output_tokens integer not null check (output_tokens >= 0),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists usage_events_organization_id_created_at_idx
+  on usage_events (organization_id, created_at);
+create index if not exists usage_events_session_id_idx
+  on usage_events (session_id);
+
+alter table usage_events enable row level security;
+create policy "usage_events_select" on usage_events for select
+  using (is_org_member(organization_id));
+-- Deliberately no insert/update/delete policy for anon/authenticated —
+-- only the Express backend (service_role) writes this table.

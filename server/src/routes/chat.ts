@@ -14,7 +14,7 @@ const REQUEST_TIMEOUT_MS = 45_000
 // can't exhaust the Anthropic quota for everyone else.
 const rateLimit = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 40 })
 
-chatRouter.post('/sessions', rateLimit, (req, res, next) => {
+chatRouter.post('/sessions', rateLimit, async (req, res, next) => {
   try {
     if (!aiProvider.isConfigured) {
       throw new AppError(503, 'El chat con IA no está configurado en el servidor todavía.')
@@ -29,7 +29,11 @@ chatRouter.post('/sessions', rateLimit, (req, res, next) => {
       throw new AppError(403, 'Este chat no está activo en este momento.')
     }
 
-    const session = createSession(parsed.data.orgSlug, parsed.data.config)
+    // createSession() also resolves this session's real organization_id
+    // (for usage-metering attribution only — see chat-service.ts and
+    // organization-lookup.ts) before creating it; never blocks or fails
+    // session creation itself if that resolution comes back null.
+    const session = await createSession(parsed.data.orgSlug, parsed.data.config)
     res.status(201).json({
       sessionId: session.id,
       welcomeMessage: session.config.welcomeMessage,

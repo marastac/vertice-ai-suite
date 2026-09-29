@@ -25,9 +25,18 @@ export const chatConfigurationSchema = z.object({
 })
 export type ChatConfigurationInput = z.infer<typeof chatConfigurationSchema>
 
+// `config` is OPTIONAL: it is only ever trusted as an authority source
+// when this backend has no Supabase configured at all (`not_configured` —
+// see organization-lookup.ts). For a `resolved` organization, the real
+// `chat_configuration` row is loaded server-side (see
+// repositories/chat-config-repository.ts) and any `config` sent here is
+// ignored entirely — see chat-service.ts::createSession()/
+// ensureConfigTrusted(). Kept optional (not removed) rather than dropped
+// from the schema, because the local/dev deployment genuinely has no other
+// source of truth to fall back on.
 export const createSessionBodySchema = z.object({
   orgSlug: z.string().trim().min(1).max(100),
-  config: chatConfigurationSchema,
+  config: chatConfigurationSchema.optional(),
 })
 export type CreateSessionBody = z.infer<typeof createSessionBodySchema>
 

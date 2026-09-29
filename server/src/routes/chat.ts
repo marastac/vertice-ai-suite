@@ -25,14 +25,16 @@ chatRouter.post('/sessions', rateLimit, async (req, res, next) => {
       throw new AppError(400, 'La configuración del chat enviada no es válida.')
     }
 
-    if (!parsed.data.config.isActive) {
-      throw new AppError(403, 'Este chat no está activo en este momento.')
-    }
-
-    // createSession() also resolves this session's real organization_id
-    // (for usage-metering attribution only — see chat-service.ts and
-    // organization-lookup.ts) before creating it; never blocks or fails
-    // session creation itself if that resolution comes back null.
+    // createSession() owns EVERY security-relevant decision about this
+    // session's config now — including isActive — never this route. For a
+    // `resolved` organization it loads the real chat_configuration
+    // server-side and ignores parsed.data.config entirely; that client-sent
+    // config is only ever used as-is for a `not_configured` (local/dev, no
+    // Supabase) backend. See chat-service.ts::createSession() and the
+    // config-trust hardening report for the full reasoning — checking
+    // `parsed.data.config.isActive` here would both be redundant with that
+    // and, for `resolved`, actively wrong (a client-controlled value with
+    // no server verification).
     const session = await createSession(parsed.data.orgSlug, parsed.data.config)
     res.status(201).json({
       sessionId: session.id,

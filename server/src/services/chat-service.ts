@@ -1,6 +1,7 @@
 import { sessionRepository } from '../repositories/session-repository.js'
 import type { StoredSession } from '../repositories/session-repository.js'
 import { recordUsageEvent } from '../repositories/usage-events-repository.js'
+import { loadChatConfigurationForOrganization } from '../repositories/chat-config-repository.js'
 import { chatQualificationResultSchema } from '../schemas/chat.js'
 import type { ChatConfigurationInput, ChatQualificationResult } from '../schemas/chat.js'
 import { aiProvider } from './ai-provider.js'
@@ -9,6 +10,31 @@ import { AppError } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { resolveOrganizationIdForSlug } from './organization-lookup.js'
 import { buildChatSystemPrompt, buildExtractionSystemPrompt } from './system-prompt.js'
+
+type TrustedConfigOutcome =
+  | { ok: true; config: ChatConfigurationInput }
+  | { ok: false; reason: 'not_found' | 'unavailable' | 'inactive' }
+
+/**
+ * The ONE place that turns a `chat-config-repository.ts::ChatConfigLookup`
+ * into a pass/fail verdict for spending Anthropic tokens — shared by
+ * createSession() (session-creation time) and ensureConfigTrusted()
+ * (per-message, for a session whose config was never validated yet), so
+ * the "not_found vs unavailable vs inactive" decision only lives in one
+ * place. Each caller still throws its OWN error type/message for each
+ * `reason` (AppError with a status code at creation time; a plain Error
+ * mid-conversation, mirroring ensureOrganizationResolved()'s own
+ * not_found/unavailable message pattern) — this function only fetches and
+ * classifies, it never decides how a failure should surface.
+ */
+async function resolveTrustedServerConfig(organizationId: string): Promise<TrustedConfigOutcome> {
+  const lookup = await loadChatConfigurationForOrganization(organizationId)
+
+  if (lookup.status === 'not_found') return { ok: false, reason: 'not_found' }
+  if (lookup.status === 'unavailable') return { ok: false, reason: 'unavailable' }
+  if (!lookup.config.isActive) return { ok: false, reason: 'inactive' }
+  return { ok: true, config: lookup.config }
+}
 
 /**
  * Attempts the session's organization resolution once, at creation time,
@@ -25,24 +51,77 @@ import { buildChatSystemPrompt, buildExtractionSystemPrompt } from './system-pro
  * costs nothing to implement, since createSession() already awaits this
  * resolution unconditionally.
  *
- * `not_configured` (the permitted local/dev case — this deployment has no
- * Supabase credential at all, see organization-lookup.ts) and `resolved`
- * both still create the session exactly as before. `unavailable` (a
- * genuine but possibly transient lookup failure) is ALSO still stored
- * as-is rather than rejected — rejecting session creation for a transient
- * outage would refuse even visitors of organizations that really do exist,
- * which a confirmed `not_found` never risks. ensureOrganizationResolved()
- * gives an `unavailable` session a fresh chance to resolve on its first
- * message, before any call to Anthropic.
+ * `config` from the request body is now OPTIONAL and, critically, is
+ * ONLY EVER trusted for a `not_configured` organization (this backend has
+ * no Supabase at all — see organization-lookup.ts) — the one case where
+ * there is genuinely no other source of truth. For a `resolved`
+ * organization, `config` is IGNORED COMPLETELY: the real
+ * `chat_configuration` row is loaded server-side via
+ * resolveTrustedServerConfig() and that is the only thing ever stored on
+ * `StoredSession.config`/used to build an Anthropic prompt. This closes
+ * the "orgSlug real + config inventado" gap identified in the read-only
+ * audit — a client can no longer influence the system prompt, the
+ * qualification criteria/scoring, or whether the chat is active, for any
+ * real (Supabase-configured) organization.
+ *
+ * `unavailable` (a genuine but possibly transient organization-lookup
+ * failure) still does NOT block session creation itself, same as before
+ * this hardening — but its config is stored with NO configSource (left
+ * `undefined`), since there is no trustworthy source yet either way. That
+ * placeholder is never used to build a prompt: ensureConfigTrusted() (via
+ * ensureOrganizationResolved() throwing first) guarantees this session can
+ * never reach Anthropic until its organization — and therefore its config
+ * — settles to something trustworthy.
  */
-export async function createSession(orgSlug: string, config: ChatConfigurationInput): Promise<StoredSession> {
+export async function createSession(orgSlug: string, config?: ChatConfigurationInput): Promise<StoredSession> {
   const organization = await resolveOrganizationIdForSlug(orgSlug)
 
   if (organization.status === 'not_found') {
     throw new AppError(404, 'Esta organización no existe o no está disponible.')
   }
 
-  return sessionRepository.create(orgSlug, config, organization)
+  if (organization.status === 'resolved') {
+    const outcome = await resolveTrustedServerConfig(organization.organizationId)
+    if (!outcome.ok) {
+      if (outcome.reason === 'not_found') {
+        throw new AppError(404, 'Esta organización todavía no tiene un chat configurado.')
+      }
+      if (outcome.reason === 'unavailable') {
+        throw new AppError(503, 'No se pudo cargar la configuración del chat en este momento. Inténtalo de nuevo.')
+      }
+      throw new AppError(403, 'Este chat no está activo en este momento.')
+    }
+    return sessionRepository.create(orgSlug, outcome.config, organization, 'server')
+  }
+
+  if (organization.status === 'not_configured') {
+    // The ONLY case where the client-supplied config is trusted — this
+    // deployment has no Supabase at all, so there is no server-side
+    // chat_configuration to load instead (see organization-lookup.ts's own
+    // doc comment on what `not_configured` means).
+    if (!config) {
+      throw new AppError(400, 'Falta la configuración del chat.')
+    }
+    if (!config.isActive) {
+      throw new AppError(403, 'Este chat no está activo en este momento.')
+    }
+    return sessionRepository.create(orgSlug, config, organization, 'local')
+  }
+
+  // organization.status === 'unavailable': session creation is still
+  // allowed (unchanged from before this hardening — see
+  // organization-lookup.ts/ensureOrganizationResolved()'s own reasoning for
+  // why a transient outage must never refuse a real organization's
+  // visitor), but there is no trustworthy config source yet. The client's
+  // config is stored only as an immediate-response placeholder (for the
+  // 201 response's welcomeMessage/assistantName) — configSource is
+  // deliberately left undefined so ensureConfigTrusted() replaces it with
+  // the real server config (or blocks) the moment this organization
+  // resolves, before any Anthropic call.
+  if (!config) {
+    throw new AppError(400, 'Falta la configuración del chat.')
+  }
+  return sessionRepository.create(orgSlug, config, organization, undefined)
 }
 
 /**
@@ -97,6 +176,81 @@ async function ensureOrganizationResolved(session: StoredSession): Promise<void>
         : 'No se pudo verificar la organización de esta conversación (fallo temporal). Inténtalo de nuevo.',
     )
   }
+}
+
+/**
+ * Ensures `session.config` is TRUSTWORTHY before any Anthropic call — the
+ * second half of the "never trust client config" hardening, and the
+ * reason `organization.status === 'resolved'` alone is NOT enough for
+ * streamAssistantReply()/extractQualification() to proceed (see
+ * StoredSession.configSource's own doc comment for exactly why).
+ *
+ * MUST be called AFTER ensureOrganizationResolved() has already run and
+ * NOT thrown — this function assumes `session.organization.status` is
+ * either `'resolved'` or `'not_configured'` (the only two outcomes
+ * ensureOrganizationResolved() ever lets through) and does not re-check
+ * `'not_found'`/`'unavailable'` itself.
+ *
+ * `configSource === 'server'` or `'local'` is FINAL — this is a no-op for
+ * both, by design (see the task's own explicit instruction: refreshing a
+ * `'server'` config on every message, to catch an agency disabling the
+ * chat minutes after a session started, would turn this hardening into a
+ * per-message Supabase read; that trade-off is deliberately NOT made here
+ * and is documented as a separate, accepted residual risk in the report).
+ * `undefined` (an old on-disk session, or a session created while its
+ * organization was still `'unavailable'` — see createSession()) is the
+ * only case refreshed here, exactly once, before it's ever allowed to
+ * settle.
+ */
+async function ensureConfigTrusted(session: StoredSession): Promise<void> {
+  if (session.configSource === 'server' || session.configSource === 'local') {
+    return
+  }
+
+  const organizationStatus = session.organization?.status
+
+  if (organizationStatus === 'resolved') {
+    const outcome = await resolveTrustedServerConfig(session.organization.organizationId)
+    if (!outcome.ok) {
+      throw new Error(
+        outcome.reason === 'not_found'
+          ? 'Esta organización todavía no tiene un chat configurado.'
+          : outcome.reason === 'unavailable'
+            ? 'No se pudo cargar la configuración del chat en este momento. Inténtalo de nuevo.'
+            : 'Este chat no está activo en este momento.',
+      )
+    }
+    sessionRepository.setConfig(session.id, outcome.config, 'server')
+    session.config = outcome.config
+    session.configSource = 'server'
+    return
+  }
+
+  if (organizationStatus === 'not_configured') {
+    // There is no server-side config to load — the existing session.config
+    // (whatever the client sent at creation, or whatever an old
+    // pre-hardening session already had) is exactly what 'not_configured'
+    // allows trusting. Still re-verified against isActive here (an old
+    // session's config may have been saved before this field was even
+    // enforced consistently) before it's settled as final.
+    if (!session.config.isActive) {
+      throw new Error('Este chat no está activo en este momento.')
+    }
+    sessionRepository.setConfig(session.id, session.config, 'local')
+    session.configSource = 'local'
+    return
+  }
+
+  // Defensive only — ensureOrganizationResolved() (called immediately
+  // before this, in handleIncomingMessage()) is expected to have already
+  // thrown for anything other than 'resolved'/'not_configured', and to
+  // have settled session.organization (via the shared session-repository
+  // reference — see session-repository.ts) to reflect that before this
+  // function ever runs. If this branch is ever reached anyway (e.g. a
+  // future caller that skips that step, or a repository that doesn't share
+  // references), the safe default is to BLOCK — never fall through to
+  // spending Anthropic tokens on a config that was never validated.
+  throw new Error('No se pudo verificar la configuración de esta conversación. Inténtalo de nuevo.')
 }
 
 export function getSession(sessionId: string): StoredSession | undefined {
@@ -298,6 +452,13 @@ export interface IncomingMessageHandlers {
  * no turn appended to history, no qualification touched. The route's
  * existing catch block turns this into the same calm, generic, retryable
  * `error` SSE event it already sends for any other mid-stream failure.
+ *
+ * ensureConfigTrusted() runs THIRD, still before any call to Anthropic —
+ * settling `organization` alone is not enough (see its own doc comment):
+ * a session whose `config` was never validated against `chat_configuration`
+ * is refreshed (or blocked) here, so streamAssistantReply()/
+ * extractQualification() below can always assume `session.config` is
+ * trustworthy by the time they run.
  */
 export async function handleIncomingMessage(
   session: StoredSession,
@@ -311,6 +472,7 @@ export async function handleIncomingMessage(
   }
 
   await ensureOrganizationResolved(session)
+  await ensureConfigTrusted(session)
 
   for await (const delta of streamAssistantReply(session, userMessage, signal)) {
     handlers.onDelta(delta)

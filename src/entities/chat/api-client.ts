@@ -29,6 +29,16 @@ export interface CreateRemoteSessionResult {
   assistantName: string
 }
 
+/**
+ * `config` is sent as before (PublicChatPage.tsx always has one by the
+ * time it calls this — see usePublicChatConfigQuery()) but is no longer an
+ * authority the backend trusts unconditionally: for a real, Supabase-backed
+ * organization, the backend loads its `chat_configuration` row itself and
+ * ignores this value entirely; it's only ever used as-is when the backend
+ * has no Supabase configured at all (local/dev). See server/src/services/
+ * chat-service.ts::createSession() for the full trust model — this
+ * function's contract with the backend is otherwise unchanged.
+ */
 export async function createRemoteChatSession(orgSlug: string, config: ChatConfiguration): Promise<CreateRemoteSessionResult> {
   const response = await fetch(`${API_BASE_URL}/api/chat/sessions`, {
     method: 'POST',

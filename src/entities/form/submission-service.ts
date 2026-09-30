@@ -1,4 +1,6 @@
+import { dataBackend } from '@/shared/lib/data-backend'
 import { activeLeadRepository } from '@/entities/lead'
+import { submitPublicForm } from './api-client'
 import { activeFormRepository } from './active-form-repository'
 import { activeSubmissionRepository } from './active-submission-repository'
 import { computeSubmissionScore, scoreToLeadStatus } from './scoring'
@@ -37,10 +39,44 @@ export interface SubmitQualificationFormResult {
   organizationId: string
 }
 
+/**
+ * `honeypot` defaults to '' (never triggers) so every existing caller that
+ * doesn't know about it keeps working unchanged.
+ *
+ * Fase C hardening branches on `dataBackend`:
+ *   - `supabase`: delegates entirely to the backend (submitPublicForm() →
+ *     POST /api/forms/:formId/submissions) — the browser no longer writes
+ *     leads/form_submissions/lead_activity directly at all. See
+ *     server/src/services/form-submission-service.ts for the full
+ *     server-side validation/scoring/write sequence this replaces.
+ *   - `local`: UNCHANGED from before Fase C — forms/leads/submissions in
+ *     local mode live entirely in this browser's own localStorage, which
+ *     the Express backend has no access to and must never be routed
+ *     through. This hardening targets Supabase's real, unauthenticated
+ *     REST API attack surface specifically; local mode never had one.
+ */
 export async function submitQualificationForm(
   formId: string,
   answers: FormSubmissionAnswer[],
+  honeypot = '',
 ): Promise<SubmitQualificationFormResult> {
+  if (dataBackend === 'supabase') {
+    const result = await submitPublicForm(formId, answers, honeypot)
+    return {
+      submission: {
+        id: result.submissionId,
+        organizationId: result.organizationId,
+        formId,
+        answers,
+        score: result.score,
+        leadId: result.leadId,
+        submittedAt: result.submittedAt,
+      },
+      leadId: result.leadId,
+      organizationId: result.organizationId,
+    }
+  }
+
   // Public, org-agnostic lookup — the visitor submitting this form was never
   // a member of any organization. The form row itself carries the
   // organizationId every downstream write below needs.

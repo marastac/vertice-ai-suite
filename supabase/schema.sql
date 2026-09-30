@@ -707,19 +707,18 @@ drop policy if exists "leads_insert" on leads;
 drop policy if exists "leads_update" on leads;
 drop policy if exists "leads_delete" on leads;
 create policy "leads_select" on leads for select using (is_org_member(organization_id));
--- Public INSERT stays possible on purpose — a lead filling out /f/:formId,
--- or a website visitor qualifying through /c/:orgSlug, is never signed in,
--- and both flows must still be able to create a lead row. What changed:
--- an AUTHENTICATED caller (any signed-in user, in any organization) now
--- additionally needs is_org_editor(organization_id) — i.e. member/admin/
--- owner of *that* organization, never 'viewer'. Before this, a signed-in
--- viewer could create a lead manually from /leads exactly like an owner
--- could; anon's branch is unchanged (organization_id still comes from the
--- form/chat config the visitor is already looking at, never chosen freely —
--- same residual spam risk as any public contact form, but never a READ of
--- another organization's data, since SELECT above stays member-only).
+-- Fase C (see migrations-form-submissions-rls.sql for the full reasoning):
+-- the anonymous branch (`auth.uid() is null`) this policy used to have was
+-- removed — a public form submission no longer writes here directly at
+-- all; it goes through POST /api/forms/:formId/submissions (service_role,
+-- bypasses RLS regardless of this policy) instead. The public chat's lead
+-- creation was never affected either way — it always went through the
+-- upsert_chat_lead() RPC (SECURITY DEFINER, also bypasses RLS). What
+-- remains is exactly the authenticated dashboard's own requirement:
+-- member/admin/owner of *that* organization, never 'viewer' — unchanged
+-- from before this fase.
 create policy "leads_insert" on leads for insert with check (
-  auth.uid() is null or is_org_editor(organization_id)
+  is_org_editor(organization_id)
 );
 -- UPDATE: an authenticated org member can update a lead in their org only if
 -- they're not a 'viewer' (normal dashboard editing — status changes, the
@@ -858,10 +857,15 @@ drop policy if exists "form_submissions_delete" on form_submissions;
 -- SELECT stays is_org_member (unchanged) — every role, including viewer,
 -- can see an organization's submissions; only writing them is restricted.
 create policy "form_submissions_select" on form_submissions for select using (is_org_member(organization_id));
--- Public INSERT, same reasoning as leads above: a visitor submitting a
--- public form is never signed in. Unchanged — this is the flow that must
--- keep working with no login.
-create policy "form_submissions_insert" on form_submissions for insert with check (true);
+-- Fase C: was `with check (true)` (open to anyone, anon or authenticated) —
+-- a public form submission now writes here exclusively through
+-- POST /api/forms/:formId/submissions (service_role, bypasses RLS
+-- regardless). No UI or code path ever needs an authenticated non-editor
+-- to insert a submission directly, so this now matches leads_insert's own
+-- authenticated threshold — see migrations-form-submissions-rls.sql.
+create policy "form_submissions_insert" on form_submissions for insert with check (
+  is_org_editor(organization_id)
+);
 -- UPDATE/DELETE: no UI exposes editing or deleting a submission today, but
 -- RLS shouldn't rely on that — same is_org_editor/is_org_admin thresholds
 -- as forms above, so a viewer can't modify or delete a submission via a
@@ -894,9 +898,17 @@ drop policy if exists "lead_activity_insert" on lead_activity;
 drop policy if exists "lead_activity_update" on lead_activity;
 drop policy if exists "lead_activity_delete" on lead_activity;
 create policy "lead_activity_select" on lead_activity for select using (is_org_member(organization_id));
--- Public INSERT: the first activity entry is written in the same anonymous
--- request that creates the lead (public form/chat flows).
-create policy "lead_activity_insert" on lead_activity for insert with check (true);
+-- Fase C: was `with check (true)` (open to anyone). The public form flow's
+-- activity entry is now written server-side via service_role (bypasses RLS
+-- regardless) by POST /api/forms/:formId/submissions; the public chat's
+-- activity entry is written by the upsert_chat_lead() RPC (SECURITY
+-- DEFINER, also bypasses RLS). The authenticated dashboard's create/update
+-- flows (insertActivity() in lead-supabase-repository.ts) are the only
+-- remaining caller this policy needs to allow — see
+-- migrations-form-submissions-rls.sql.
+create policy "lead_activity_insert" on lead_activity for insert with check (
+  is_org_editor(organization_id)
+);
 create policy "lead_activity_update" on lead_activity for update using (is_org_member(organization_id));
 create policy "lead_activity_delete" on lead_activity for delete using (is_org_member(organization_id));
 

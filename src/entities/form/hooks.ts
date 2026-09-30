@@ -144,8 +144,8 @@ export function useSubmissionsQuery(formId: string | undefined) {
 export function useSubmitFormMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ formId, answers }: { formId: string; answers: FormSubmissionAnswer[] }) =>
-      submitQualificationForm(formId, answers),
+    mutationFn: ({ formId, answers, honeypot }: { formId: string; answers: FormSubmissionAnswer[]; honeypot?: string }) =>
+      submitQualificationForm(formId, answers, honeypot),
     onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: formKeys.list(result.organizationId) })
       queryClient.invalidateQueries({ queryKey: submissionKeys.byForm(result.organizationId, variables.formId) })

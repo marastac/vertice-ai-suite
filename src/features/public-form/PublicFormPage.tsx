@@ -16,6 +16,10 @@ export function PublicFormPage() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isSubmitted, setIsSubmitted] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Honeypot (Fase C): a hidden field no real visitor can see or reach via
+  // keyboard tab order — a filled value means an automated submission. See
+  // entities/form/submission-service.ts / server/src/schemas/forms.ts.
+  const [honeypot, setHoneypot] = useState('')
 
   const answeredCount = useMemo(() => {
     if (!form) return 0
@@ -51,7 +55,7 @@ export function PublicFormPage() {
 
     setSubmitError(null)
     try {
-      await submitMutation.mutateAsync({ formId: form.id, answers: payload })
+      await submitMutation.mutateAsync({ formId: form.id, answers: payload, honeypot })
       setIsSubmitted(true)
     } catch {
       setSubmitError('No se pudo enviar el formulario. Inténtalo de nuevo.')
@@ -123,6 +127,23 @@ export function PublicFormPage() {
               </div>
 
               <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+                {/* Honeypot — invisible to a real visitor, never reachable via
+                    Tab (tabIndex=-1) or a screen reader (aria-hidden). Named
+                    "website" as bait for basic automated form-fillers. A
+                    real browser always submits it empty; see PublicFormPage's
+                    own state above and submission-service.ts for what
+                    happens when it isn't. */}
+                <input
+                  type="text"
+                  name="website"
+                  value={honeypot}
+                  onChange={(event) => setHoneypot(event.target.value)}
+                  tabIndex={-1}
+                  autoComplete="off"
+                  aria-hidden="true"
+                  className="absolute left-[-9999px] h-0 w-0 overflow-hidden opacity-0"
+                />
+
                 {form.questions.map((question, index) => (
                   <div key={question.id} className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-slate-200">

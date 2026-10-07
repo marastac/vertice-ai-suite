@@ -115,7 +115,7 @@ export function HubspotIntegrationCard() {
       <ConfirmDialog
         isOpen={isDisconnectConfirmOpen}
         title="Desconectar HubSpot"
-        description="Se revocará el acceso de MARASTAC AI a tu cuenta de HubSpot. Podrás volver a conectar cuando quieras."
+        description="Se revocará el acceso de MAASTAC AI a tu cuenta de HubSpot. Podrás volver a conectar cuando quieras."
         confirmLabel="Desconectar"
         variant="danger"
         isConfirming={disconnectMutation.isPending}

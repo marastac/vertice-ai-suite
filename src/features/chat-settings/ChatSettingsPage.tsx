@@ -128,7 +128,7 @@ export function ChatSettingsPage() {
         title="Configuración del chat"
         description={
           canEdit
-            ? 'Configura cómo el asistente de MARASTAC AI califica a los leads en conversación.'
+            ? 'Configura cómo el asistente de MAASTAC AI califica a los leads en conversación.'
             : 'Estás viendo esta configuración en modo solo lectura — tu rol de Visualizador no permite guardar cambios.'
         }
         actions={

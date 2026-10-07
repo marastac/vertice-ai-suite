@@ -16,7 +16,7 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
         <span className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
           <Sparkles className="size-5 text-white" />
         </span>
-        <span className="text-base font-semibold text-white">MARASTAC AI</span>
+        <span className="text-base font-semibold text-white">MAASTAC AI</span>
       </div>
 
       <Card className="w-full max-w-md">

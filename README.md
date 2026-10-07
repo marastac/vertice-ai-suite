@@ -1,6 +1,6 @@
-# MARASTAC AI
+# MAASTAC AI
 
-MARASTAC AI is an AI-powered CRM that helps businesses — agencies, content creators, course sellers, and online businesses — capture, qualify, manage, and convert leads.
+MAASTAC AI is an AI-powered CRM that helps businesses — agencies, content creators, course sellers, and online businesses — capture, qualify, manage, and convert leads.
 
 ## Features
 
@@ -25,9 +25,9 @@ MARASTAC AI is an AI-powered CRM that helps businesses — agencies, content cre
 - PostgreSQL
 - Anthropic Claude API
 
-# MARASTAC AI
+# MAASTAC AI
 
-MARASTAC AI is a SaaS product that helps businesses — agencies, content creators, course sellers, and online businesses — qualify leads via AI-assisted forms and chat.
+MAASTAC AI is a SaaS product that helps businesses — agencies, content creators, course sellers, and online businesses — qualify leads via AI-assisted forms and chat.
 
 See `CLAUDE.md` for the full architecture reference. This file covers day-to-day setup.
 

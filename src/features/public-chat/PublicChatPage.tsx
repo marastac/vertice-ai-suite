@@ -23,7 +23,7 @@ function ChatShell({ children }: { children: ReactNode }) {
         <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
           <Sparkles className="size-4 text-white" />
         </span>
-        <span className="text-sm font-semibold text-white">MARASTAC AI</span>
+        <span className="text-sm font-semibold text-white">MAASTAC AI</span>
       </div>
       {children}
     </div>
@@ -231,7 +231,7 @@ export function PublicChatPage() {
       <ChatShell>
         <MessagePanel
           title="No se pudo conectar con el servidor"
-          description="El backend de MARASTAC AI no está disponible. Si eres parte del equipo, ejecuta 'npm run dev:server' y recarga la página."
+          description="El backend de MAASTAC AI no está disponible. Si eres parte del equipo, ejecuta 'npm run dev:server' y recarga la página."
         />
       </ChatShell>
     )
@@ -282,7 +282,7 @@ export function PublicChatPage() {
         </span>
         <div>
           <p className="text-sm font-semibold text-white">{config.assistantName}</p>
-          <p className="text-xs text-slate-500">MARASTAC AI</p>
+          <p className="text-xs text-slate-500">MAASTAC AI</p>
         </div>
       </div>
 

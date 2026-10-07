@@ -73,11 +73,11 @@ export function OnboardingPage() {
         <span className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
           <Sparkles className="size-5 text-white" />
         </span>
-        <span className="text-base font-semibold text-white">MARASTAC AI</span>
+        <span className="text-base font-semibold text-white">MAASTAC AI</span>
       </div>
 
       <div className="w-full max-w-2xl">
-        <h1 className="text-center text-2xl font-semibold text-white">¡Bienvenido/a a MARASTAC AI!</h1>
+        <h1 className="text-center text-2xl font-semibold text-white">¡Bienvenido/a a MAASTAC AI!</h1>
         <p className="mx-auto mt-2 max-w-lg text-center text-sm text-slate-400">
           Cuéntanos a qué te dedicas y preparamos tu asistente de chat y un formulario de calificación de ejemplo, listos
           para editar.

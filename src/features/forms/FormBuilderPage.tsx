@@ -86,7 +86,7 @@ export function FormBuilderPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={isEditMode ? 'Editar formulario' : 'Nuevo formulario'}
-        description="Configura las preguntas y la puntuación que MARASTAC AI usará para calificar leads."
+        description="Configura las preguntas y la puntuación que MAASTAC AI usará para calificar leads."
       />
       <FormBuilder
         defaultValues={

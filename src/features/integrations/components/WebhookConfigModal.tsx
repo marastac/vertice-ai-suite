@@ -155,7 +155,7 @@ export function WebhookConfigModal({ isOpen, onClose }: WebhookConfigModalProps)
           <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
             <Input
               label="URL del endpoint *"
-              placeholder="https://tu-servidor.com/webhooks/marastac-ai"
+              placeholder="https://tu-servidor.com/webhooks/maastac-ai"
               hint="Debe ser una URL HTTPS pública — no se admiten direcciones internas o privadas."
               error={errors.url?.message}
               {...register('url')}

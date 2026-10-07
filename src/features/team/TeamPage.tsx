@@ -91,7 +91,7 @@ export function TeamPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Equipo"
-        description="Gestiona quién tiene acceso a tu espacio de trabajo de MARASTAC AI."
+        description="Gestiona quién tiene acceso a tu espacio de trabajo de MAASTAC AI."
         actions={
           canManage ? (
             <Button leftIcon={<UserPlus className="size-4" />} onClick={() => setIsInviteModalOpen(true)}>

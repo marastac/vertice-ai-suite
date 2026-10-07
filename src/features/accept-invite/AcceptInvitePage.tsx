@@ -68,7 +68,7 @@ export function AcceptInvitePage() {
           <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
             <Sparkles className="size-4 text-white" />
           </span>
-          <span className="text-sm font-semibold text-white">Lead AI</span>
+          <span className="text-sm font-semibold text-white">MARASTAC AI</span>
         </div>
 
         {previewQuery.isLoading && (

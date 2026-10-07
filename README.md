@@ -1,6 +1,6 @@
-# Lead AI - Vértice AI Suite
+# MARASTAC AI
 
-Lead AI is an AI-powered CRM that helps businesses — agencies, content creators, course sellers, and online businesses — capture, qualify, manage, and convert leads.
+MARASTAC AI is an AI-powered CRM that helps businesses — agencies, content creators, course sellers, and online businesses — capture, qualify, manage, and convert leads.
 
 ## Features
 
@@ -25,9 +25,9 @@ Lead AI is an AI-powered CRM that helps businesses — agencies, content creator
 - PostgreSQL
 - Anthropic Claude API
 
-# Lead AI
+# MARASTAC AI
 
-Lead AI is a SaaS product in the Vertice AI Suite that helps businesses — agencies, content creators, course sellers, and online businesses — qualify leads via AI-assisted forms and chat.
+MARASTAC AI is a SaaS product that helps businesses — agencies, content creators, course sellers, and online businesses — qualify leads via AI-assisted forms and chat.
 
 See `CLAUDE.md` for the full architecture reference. This file covers day-to-day setup.
 

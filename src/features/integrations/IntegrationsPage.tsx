@@ -28,7 +28,7 @@ const COMING_SOON_INTEGRATIONS: IntegrationRoadmapItem[] = [
   {
     id: 'zapier',
     name: 'Zapier',
-    description: 'Conecta Lead AI con miles de aplicaciones.',
+    description: 'Conecta MARASTAC AI con miles de aplicaciones.',
     icon: Plug,
   },
   {
@@ -84,7 +84,7 @@ export function IntegrationsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Integraciones"
-        description="Conecta Lead AI con las herramientas que ya utiliza tu negocio."
+        description="Conecta MARASTAC AI con las herramientas que ya utiliza tu negocio."
       />
 
       {hubspotCallbackStatus === 'connected' && (

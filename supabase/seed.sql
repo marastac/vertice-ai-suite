@@ -33,9 +33,9 @@ on conflict (id) do nothing;
 
 -- ── team_members (mirrors entities/team-member/mock-data.ts) ────────────
 insert into team_members (id, organization_id, name, email, role) values
-  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'Alex Morgan', 'alex@leadai.app', 'owner'),
-  ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000000', 'Jordan Lee', 'jordan@leadai.app', 'admin'),
-  ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000', 'Sam Rivera', 'sam@leadai.app', 'member')
+  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'Alex Morgan', 'alex@example.com', 'owner'),
+  ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000000', 'Jordan Lee', 'jordan@example.com', 'admin'),
+  ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000', 'Sam Rivera', 'sam@example.com', 'member')
 on conflict (id) do nothing;
 
 -- ── forms (mirrors entities/form/mock-data.ts) ───────────────────────────

@@ -49,7 +49,7 @@ export function LoginPage() {
   return (
     <AuthLayout
       title="Inicia sesión"
-      description="Accede al panel de Lead AI"
+      description="Accede al panel de MARASTAC AI"
       footer={
         <span className="text-slate-400">
           ¿No tienes cuenta?{' '}

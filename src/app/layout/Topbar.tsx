@@ -53,7 +53,7 @@ export function Topbar({ onOpenMobileNav }: TopbarProps) {
           <span className="flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-purple-600 text-xs font-bold text-white">
             L
           </span>
-          <span className="text-sm font-semibold text-white">Lead AI</span>
+          <span className="text-sm font-semibold text-white">MARASTAC AI</span>
         </div>
       </div>
 

@@ -148,7 +148,7 @@ webhooksRouter.post('/test', async (req, res, next) => {
       lead: {
         id: '00000000-0000-0000-0000-000000000000',
         name: 'Lead de prueba',
-        email: 'prueba@leadai.app',
+        email: 'prueba@example.com',
         phone: null,
         company: 'Empresa de prueba',
         position: null,
@@ -156,7 +156,7 @@ webhooksRouter.post('/test', async (req, res, next) => {
         status: 'new',
         score: 0,
         estimated_budget: null,
-        notes: 'Este es un envío de prueba generado desde Lead AI. No corresponde a un lead real.',
+        notes: 'Este es un envío de prueba generado desde MARASTAC AI. No corresponde a un lead real.',
         form_id: null,
         submission_id: null,
         chat_session_id: null,

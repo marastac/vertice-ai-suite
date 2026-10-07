@@ -120,7 +120,7 @@ export function SettingsPage() {
                   submitted payload entirely, not just visually disabled. */}
               <Input
                 label="URL del espacio de trabajo"
-                value={organization ? `leadai.app/${organization.slug}` : ''}
+                value={organization ? `${window.location.origin}/c/${organization.slug}` : ''}
                 readOnly
                 hint="No se puede cambiar por ahora para no romper enlaces públicos ya compartidos."
               />

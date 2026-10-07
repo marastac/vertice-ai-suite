@@ -54,7 +54,7 @@ export function FormsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Formularios de calificación"
-        description="Diseña las preguntas que Lead AI usa para puntuar y calificar nuevos leads."
+        description="Diseña las preguntas que MARASTAC AI usa para puntuar y calificar nuevos leads."
         actions={
           canEdit ? (
             <Button leftIcon={<Plus className="size-4" />} onClick={() => navigate('/forms/new')}>

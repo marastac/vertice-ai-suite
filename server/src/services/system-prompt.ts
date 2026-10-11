@@ -63,25 +63,22 @@ ${criteriaLines}
 Puntuación mínima configurada para considerar al lead "qualified": ${config.minQualifiedScore}.
 Reglas de estado: score menor a 40 => "disqualified"; score entre 40 y ${Math.max(40, config.minQualifiedScore - 1)} => "qualifying"; score mayor o igual a ${config.minQualifiedScore} => "qualified".
 
-Responde ÚNICAMENTE con un objeto JSON válido (sin texto adicional, sin bloques de código markdown) con exactamente estas claves:
-{
-  "contactName": string o null,
-  "email": string o null,
-  "phone": string o null,
-  "company": string o null,
-  "businessType": string o null,
-  "requestedService": string o null,
-  "budget": string o null,
-  "timeline": string o null,
-  "mainNeed": string o null,
-  "summary": string (resumen breve de la conversación, 1-3 frases),
-  "score": number entre 0 y 100,
-  "status": "disqualified" | "qualifying" | "qualified",
-  "reasons": string[] (motivos breves que explican la puntuación),
-  "collectedFields": string[] (nombres de los campos anteriores que sí se conocen, ej. "email", "company"),
-  "missingFields": string[] (nombres de los campos anteriores que todavía no se conocen),
-  "conversationComplete": boolean (true si ya se recopiló suficiente información para calificar al lead)
-}
+Responde ÚNICAMENTE con un objeto JSON válido (sin texto adicional, sin bloques de código markdown) con exactamente estas claves, en este orden:
+- contactName: string o null
+- email: string o null
+- phone: string o null
+- company: string o null
+- businessType: string o null
+- requestedService: string o null
+- budget: string o null
+- timeline: string o null
+- mainNeed: string o null
+- summary: string. Resumen de 1-2 frases, como máximo 200 caracteres. Incluye la necesidad, el presupuesto, el plazo y quién decide cuando se conozcan; omite saludos y detalles que ya no aportan.
+- score: number entre 0 y 100
+- status: "disqualified" | "qualifying" | "qualified"
+- reasons: string[]. Como máximo 4 motivos que explican la puntuación, de 12 palabras como máximo cada uno.
+- conversationComplete: boolean (true si ya se recopiló suficiente información para calificar al lead)
 
+Escribe el JSON compacto, en una sola línea: sin sangría, sin saltos de línea y sin espacios fuera de los valores de texto.
 Usa null (no cadenas vacías) para cualquier campo desconocido. No inventes valores.`
 }

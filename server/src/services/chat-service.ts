@@ -2,7 +2,7 @@ import { sessionRepository } from '../repositories/session-repository.js'
 import type { StoredSession } from '../repositories/session-repository.js'
 import { recordUsageEvent } from '../repositories/usage-events-repository.js'
 import { loadChatConfigurationForOrganization } from '../repositories/chat-config-repository.js'
-import { chatQualificationResultSchema } from '../schemas/chat.js'
+import { chatQualificationModelOutputSchema, deriveQualificationResult } from '../schemas/chat.js'
 import type { ChatConfigurationInput, ChatQualificationResult } from '../schemas/chat.js'
 import { aiProvider } from './ai-provider.js'
 import { config } from '../config.js'
@@ -401,15 +401,17 @@ export async function extractQualification(session: StoredSession, signal: Abort
 
   try {
     const parsed = JSON.parse(stripJsonFences(raw))
-    const result = chatQualificationResultSchema.safeParse(parsed)
+    const result = chatQualificationModelOutputSchema.safeParse(parsed)
 
     if (!result.success) {
       logger.warn('Qualification extraction failed Zod validation', { sessionId: session.id })
       return null
     }
 
-    sessionRepository.setQualification(session.id, result.data)
-    return result.data
+    // collectedFields/missingFields are derived here, not asked of the model.
+    const qualification = deriveQualificationResult(result.data)
+    sessionRepository.setQualification(session.id, qualification)
+    return qualification
   } catch (error) {
     logger.warn('Qualification extraction failed', {
       sessionId: session.id,

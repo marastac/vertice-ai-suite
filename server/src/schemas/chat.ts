@@ -67,3 +67,45 @@ export const chatQualificationResultSchema = z.object({
   conversationComplete: z.boolean(),
 })
 export type ChatQualificationResult = z.infer<typeof chatQualificationResultSchema>
+
+/**
+ * The fields whose presence `collectedFields`/`missingFields` describe, in
+ * the order the extraction prompt lists them (and the order those lists are
+ * always returned in).
+ */
+export const QUALIFICATION_DATA_FIELDS = [
+  'contactName',
+  'email',
+  'phone',
+  'company',
+  'businessType',
+  'requestedService',
+  'budget',
+  'timeline',
+  'mainNeed',
+] as const
+
+/**
+ * What the extraction model is asked to return: the public result minus
+ * `collectedFields`/`missingFields`, which are pure functions of the data
+ * fields and are derived server-side instead (fewer output tokens, and they
+ * can never contradict the data they describe). Zod strips unknown keys, so
+ * an output that still includes the two lists (e.g. from an older prompt)
+ * parses fine too — the derived lists always win.
+ */
+export const chatQualificationModelOutputSchema = chatQualificationResultSchema.omit({
+  collectedFields: true,
+  missingFields: true,
+})
+export type ChatQualificationModelOutput = z.infer<typeof chatQualificationModelOutputSchema>
+
+/** Completes a validated model output into the unchanged public `ChatQualificationResult` contract. */
+export function deriveQualificationResult(output: ChatQualificationModelOutput): ChatQualificationResult {
+  const { conversationComplete, ...rest } = output
+  return {
+    ...rest,
+    collectedFields: QUALIFICATION_DATA_FIELDS.filter((field) => output[field] !== null),
+    missingFields: QUALIFICATION_DATA_FIELDS.filter((field) => output[field] === null),
+    conversationComplete, // same key order as the public contract
+  }
+}

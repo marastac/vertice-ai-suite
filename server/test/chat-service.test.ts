@@ -1253,3 +1253,97 @@ describe('Usage metering — extraction calls', () => {
     expect(insert).toHaveBeenCalled()
   })
 })
+
+describe('Qualification extraction — compact model output, server-derived field lists (optimization A)', () => {
+  const COMPACT_OUTPUT = {
+    contactName: 'Laura Prueba',
+    email: 'laura.prueba@example.com',
+    phone: null,
+    company: 'Deportes Ficticios SL',
+    businessType: null,
+    requestedService: 'Campañas de anuncios',
+    budget: '1.500 euros al mes',
+    timeline: null,
+    mainNeed: 'Aumentar ventas',
+    summary: 'Laura busca anuncios para aumentar ventas; 1.500 euros al mes.',
+    score: 72,
+    status: 'qualified',
+    reasons: ['Necesidad clara', 'Presupuesto definido'],
+    conversationComplete: false,
+  }
+  const DERIVED_COLLECTED = ['contactName', 'email', 'company', 'requestedService', 'budget', 'mainNeed']
+  const DERIVED_MISSING = ['phone', 'businessType', 'timeline']
+
+  async function runExtraction(text: string) {
+    const setQualification = vi.fn()
+    const onQualification = vi.fn()
+    const extractStructuredText = vi.fn().mockResolvedValue({ text, usage: { inputTokens: 900, outputTokens: 250 }, model: 'claude-extraction-model' })
+    const { handleIncomingMessage } = await loadChatServiceWithMocks({ setQualification, extractStructuredText })
+    await handleIncomingMessage(buildSession(userTurns(1)), 'hola', new AbortController().signal, {
+      onDelta: vi.fn(),
+      onQualification,
+      onLimitReached: vi.fn(),
+    })
+    return { qualification: onQualification.mock.calls[0]?.[0], setQualification, extractStructuredText }
+  }
+
+  it('a compact, single-line output without collectedFields/missingFields still yields the full public contract', async () => {
+    const { qualification, setQualification } = await runExtraction(JSON.stringify(COMPACT_OUTPUT))
+
+    expect(qualification).toEqual({ ...COMPACT_OUTPUT, collectedFields: DERIVED_COLLECTED, missingFields: DERIVED_MISSING })
+    expect(setQualification).toHaveBeenCalledWith('session-1', qualification)
+  })
+
+  it('derives both lists from the data fields in prompt order, ignoring contradictory lists an older-format output may still send', async () => {
+    const legacy = { ...COMPACT_OUTPUT, collectedFields: ['phone'], missingFields: ['email', 'company'] }
+    const { qualification } = await runExtraction(JSON.stringify(legacy, null, 2))
+
+    expect(qualification.collectedFields).toEqual(DERIVED_COLLECTED)
+    expect(qualification.missingFields).toEqual(DERIVED_MISSING)
+  })
+
+  it('every data field null -> nothing collected, all nine missing; all present -> the reverse', async () => {
+    const empty = await runExtraction(
+      JSON.stringify({ ...COMPACT_OUTPUT, contactName: null, email: null, company: null, requestedService: null, budget: null, mainNeed: null }),
+    )
+    expect(empty.qualification.collectedFields).toEqual([])
+    expect(empty.qualification.missingFields).toHaveLength(9)
+
+    const full = await runExtraction(JSON.stringify({ ...COMPACT_OUTPUT, phone: '600000201', businessType: 'Tienda online', timeline: 'Ya' }))
+    expect(full.qualification.collectedFields).toHaveLength(9)
+    expect(full.qualification.missingFields).toEqual([])
+  })
+
+  it('still accepts markdown-fenced output', async () => {
+    const { qualification } = await runExtraction('```json\n' + JSON.stringify(COMPACT_OUTPUT) + '\n```')
+    expect(qualification.collectedFields).toEqual(DERIVED_COLLECTED)
+  })
+
+  it('validation stays as strict as before: a missing required key or an empty-string field is rejected (null qualification, never stored)', async () => {
+    const { summary: _omitted, ...withoutSummary } = COMPACT_OUTPUT
+    const missingKey = await runExtraction(JSON.stringify(withoutSummary))
+    expect(missingKey.qualification).toBeNull()
+    expect(missingKey.setQualification).not.toHaveBeenCalled()
+
+    const emptyString = await runExtraction(JSON.stringify({ ...COMPACT_OUTPUT, phone: '' }))
+    expect(emptyString.qualification).toBeNull()
+  })
+
+  it('the extraction prompt asks for compact JSON without the derived lists, keeps every commercial field, and keeps the score/status rules verbatim', async () => {
+    const { buildExtractionSystemPrompt } = await import('../src/services/system-prompt.js')
+    const prompt = buildExtractionSystemPrompt(FIXTURE_CONFIG)
+    const min = FIXTURE_CONFIG.minQualifiedScore
+
+    expect(prompt).not.toContain('collectedFields')
+    expect(prompt).not.toContain('missingFields')
+    expect(prompt).toContain('en una sola línea')
+    for (const key of ['contactName', 'email', 'phone', 'company', 'businessType', 'requestedService', 'budget', 'timeline', 'mainNeed', 'summary', 'score', 'status', 'reasons', 'conversationComplete']) {
+      expect(prompt).toContain(`- ${key}:`)
+    }
+    expect(prompt).toContain(`Puntuación mínima configurada para considerar al lead "qualified": ${min}.`)
+    expect(prompt).toContain(
+      `Reglas de estado: score menor a 40 => "disqualified"; score entre 40 y ${Math.max(40, min - 1)} => "qualifying"; score mayor o igual a ${min} => "qualified".`,
+    )
+    expect(prompt).toContain('No inventes valores.')
+  })
+})

@@ -2,11 +2,13 @@ import { z } from 'zod'
 import { supabaseAdmin } from '../lib/supabase-client.js'
 
 /**
- * Thin, typed access to the three quota RPCs created by
- * supabase/migrations-usage-quotas.sql (Fase 1): reserve_chat_usage,
- * settle_chat_usage, get_organization_quota_status. All quota DECISIONS
- * live in Postgres (atomic, per-organization row lock) — this file never
- * decides anything, it only calls, times out, and validates.
+ * Thin, typed access to the quota RPCs created by
+ * supabase/migrations-usage-quotas.sql — reserve_chat_usage,
+ * settle_chat_usage, get_organization_quota_status and
+ * expire_stale_chat_reservations — plus one read of model_prices
+ * (hasModelPrice, startup check only). All quota DECISIONS live in Postgres
+ * (atomic, per-organization row lock) — this file never decides anything,
+ * it only calls, times out, and validates.
  *
  * NEVER throws: every failure (Supabase not configured, network error,
  * PostgREST/Postgres error, timeout, unexpected response shape) comes back
@@ -15,8 +17,8 @@ import { supabaseAdmin } from '../lib/supabase-client.js'
  * logged (shadow). Error `message`s are server-side only — they must never
  * be forwarded to a browser.
  *
- * Writes via `supabaseAdmin` (service_role) — the only role the Fase 1
- * migration grants EXECUTE on these functions to.
+ * Writes via `supabaseAdmin` (service_role) — the only role the quota
+ * migration grants EXECUTE on these functions (and access to its tables) to.
  */
 
 /** Per-call timeout. Short on purpose: reserve runs before every AI call, on the visitor's critical path. */
@@ -136,7 +138,7 @@ export interface SettleResult {
  * The SQL function enforces the same floor. Must stay far above the longest
  * legitimate reservation lifetime (~70 s today: REQUEST_TIMEOUT_MS = 45 s in
  * routes/chat.ts, plus the quota RPC and usage_events timeouts). If any of
- * those grow, revisit this — see DISENO_RIESGO_2.txt.
+ * those grow, revisit this — see CLAUDE.md, "Monthly chat quotas".
  */
 export const RESERVATION_EXPIRY_MINUTES = 15
 
@@ -163,7 +165,7 @@ export type QuotaFailureKind = 'not_configured' | 'transient' | 'rejected' | 'in
 
 export type QuotaRpcResult<T> = { ok: true; data: T } | { ok: false; kind: QuotaFailureKind; message: string }
 
-/** Error codes raised by the Fase 1 SQL functions (`raise exception '...'`). */
+/** Error codes raised by the quota SQL functions (`raise exception '...'`). */
 const KNOWN_SQL_ERRORS = [
   'QUOTA_INVALID_ARGUMENT',
   'QUOTA_REQUEST_ID_CONFLICT',

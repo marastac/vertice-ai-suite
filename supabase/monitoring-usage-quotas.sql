@@ -6,7 +6,8 @@
 -- Requiere también la tabla usage_events (migrations-usage-events.sql); por
 -- eso estas consultas viven aquí y no en la migración de cuotas.
 --
--- Ver DISENO_RIESGO_3.txt (capítulos 3.4 y 4) para el contexto.
+-- Contexto y procedimiento de carga de precios: CLAUDE.md, sección
+-- "Monthly chat quotas".
 
 -- ── 1. Qué identificadores de modelo devuelve REALMENTE la API ─────────────
 -- (Paso 1 del procedimiento de carga de precios.) Cada valor que aparezca

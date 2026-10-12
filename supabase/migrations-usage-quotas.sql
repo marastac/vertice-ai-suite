@@ -1,9 +1,16 @@
--- MAASTAC AI (técnicamente "Lead AI") — Cuotas mensuales por organización, Fase 1.
+-- MAASTAC AI (técnicamente "Lead AI") — Cuotas mensuales por organización.
 --
--- Alcance: ÚNICAMENTE estructura inerte. Seis tablas, un helper de costo,
--- tres funciones RPC, un trigger que da cuota a cada organización nueva y
--- una función de conciliación de reservas abandonadas (sección 14). NADA del backend ni del frontend las usa todavía — la
--- conexión con el chat es la Fase 2/3, que requiere autorización aparte.
+-- Contenido: seis tablas, un helper de costo, cuatro funciones RPC
+-- (reserve/settle/estado/conciliación), un trigger que da cuota a cada
+-- organización nueva (sección 13) y la conciliación de reservas abandonadas
+-- (sección 14).
+--
+-- Uso: el backend Express (server/src/services/quota-service.ts y
+-- quota-reconciler.ts) las usa SOLO con CHAT_QUOTAS_ENABLED=true. Con el
+-- flag apagado (valor por defecto) el chat no toca ninguna de ellas y esta
+-- migración ni siquiera necesita estar aplicada. Ningún código del frontend
+-- las usa. Funcionamiento, modos, precios y procedimiento de emergencia:
+-- CLAUDE.md, sección "Monthly chat quotas".
 --
 -- Puramente aditiva: no altera ninguna tabla, política, trigger ni función
 -- existente. Depende solo de `organizations` (schema.sql / migrations-phase8.sql),
@@ -28,7 +35,7 @@
 -- ninguno está activo. Ningún precio de modelo se siembra: model_prices
 -- queda vacía hasta que se carguen desde el panel oficial.
 --
--- ── Decisiones de diseño (ver el informe de la Fase 1) ──────────────────────
+-- ── Decisiones de diseño ────────────────────────────────────────────────────
 -- * ATOMICIDAD: reserve_chat_usage() evalúa TODAS las condiciones antes de
 --   escribir nada. Una denegación en modo 'enforce' retorna sin haber
 --   ejecutado ningún INSERT/UPDATE — no hay nada que revertir. Retornar
@@ -117,7 +124,7 @@ on conflict (organization_id) do nothing;
 -- ── 3. model_prices: precio por modelo, cargado a mano ─────────────────────
 -- Vacía a propósito. Micro-USD por MILLÓN de tokens (p. ej. US$1/MTok =
 -- 1000000). Valores tomados SOLO de la página oficial de precios de
--- Anthropic; ver el procedimiento en DISENO_RIESGO_3.txt (capítulo 4) y las
+-- Anthropic; ver el procedimiento en CLAUDE.md ("Monthly chat quotas") y las
 -- consultas de control en monitoring-usage-quotas.sql.
 create table if not exists public.model_prices (
   model text primary key check (length(trim(model)) > 0),
@@ -725,7 +732,7 @@ create trigger organizations_create_default_quota
 -- Cierra las reservas que siguen en 'reserved' más de p_older_than (mínimo y
 -- valor por defecto: 15 minutos) — el proceso murió entre la reserva y la
 -- liquidación (reinicio/SIGKILL de Railway) o la liquidación falló dos
--- veces. Ver DISENO_RIESGO_2.txt para el razonamiento completo.
+-- veces. Resumen operativo en CLAUDE.md ("Monthly chat quotas").
 --
 -- * NUNCA gratis: se cierran por su estimated_micros COMPLETO (cota
 --   superior), con settlement_basis = 'expired'. Una llamada que pudo
@@ -997,8 +1004,10 @@ from pg_proc
 where pronamespace = 'public'::regnamespace and proname = 'get_organization_quota_status';
 
 -- ── reversión (NO ejecutar salvo que se quiera deshacer esta migración) ────
--- Elimina únicamente lo creado aquí. Ningún otro objeto depende de estas
--- tablas/funciones mientras la Fase 2 no esté desplegada. Se pierde el
+-- Elimina únicamente lo creado aquí. ANTES de revertir, apagar
+-- CHAT_QUOTAS_ENABLED en el backend: con el flag activo el chat depende de
+-- estas funciones y, sin ellas, bloquearía todos los mensajes (falla
+-- cerrado). Con el flag apagado nada más depende de ellas. Se pierde el
 -- historial de reservas/consumo acumulado en ellas (usage_events no se toca).
 --
 -- drop function if exists public.expire_stale_chat_reservations(interval, integer);

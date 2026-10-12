@@ -1520,12 +1520,13 @@ create policy "usage_events_select" on usage_events for select
 -- Deliberately no insert/update/delete policy for anon/authenticated —
 -- only the Express backend (service_role) writes this table.
 
--- ── Cuotas mensuales por organización (Fase 1, estructura inerte) ─────────
+-- ── Cuotas mensuales por organización ───────────────────────────────────
 -- Mirrors supabase/migrations-usage-quotas.sql exactly (sin las consultas de
 -- verificación ni el bloque de reversión) — ver ese archivo para el
 -- razonamiento completo: atomicidad, idempotencia, bloqueo por organización,
--- atribución al cambiar de mes, SECURITY INVOKER y privilegios. Nada del
--- backend ni del frontend usa estas tablas/funciones todavía. En un proyecto
+-- atribución al cambiar de mes, SECURITY INVOKER y privilegios. El backend
+-- las usa SOLO con CHAT_QUOTAS_ENABLED=true (apagado por defecto); el
+-- frontend no las usa. Ver CLAUDE.md, "Monthly chat quotas". En un proyecto
 -- nuevo el backfill de organization_quotas no inserta filas (aún no hay
 -- organizaciones): cada organización que se cree después recibe su fila en
 -- modo 'shadow' mediante el trigger de la sección 13. Una organización sin
@@ -1581,7 +1582,7 @@ on conflict (organization_id) do nothing;
 -- ── 3. model_prices: precio por modelo, cargado a mano ─────────────────────
 -- Vacía a propósito. Micro-USD por MILLÓN de tokens (p. ej. US$1/MTok =
 -- 1000000). Valores tomados SOLO de la página oficial de precios de
--- Anthropic; ver el procedimiento en DISENO_RIESGO_3.txt (capítulo 4) y las
+-- Anthropic; ver el procedimiento en CLAUDE.md ("Monthly chat quotas") y las
 -- consultas de control en monitoring-usage-quotas.sql.
 create table if not exists public.model_prices (
   model text primary key check (length(trim(model)) > 0),
@@ -2189,7 +2190,7 @@ create trigger organizations_create_default_quota
 -- Cierra las reservas que siguen en 'reserved' más de p_older_than (mínimo y
 -- valor por defecto: 15 minutos) — el proceso murió entre la reserva y la
 -- liquidación (reinicio/SIGKILL de Railway) o la liquidación falló dos
--- veces. Ver DISENO_RIESGO_2.txt para el razonamiento completo.
+-- veces. Resumen operativo en CLAUDE.md ("Monthly chat quotas").
 --
 -- * NUNCA gratis: se cierran por su estimated_micros COMPLETO (cota
 --   superior), con settlement_basis = 'expired'. Una llamada que pudo

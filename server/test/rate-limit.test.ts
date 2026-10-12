@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createRateLimiter } from '../src/lib/rate-limit.js'
+import { createRateLimiter, onlyWhen } from '../src/lib/rate-limit.js'
 
 // createRateLimiter() is the exact, unmodified mechanism routes/forms.ts
 // reuses for public form submissions (same as chat/webhooks/hubspot
@@ -89,5 +89,46 @@ describe('createRateLimiter', () => {
 
     expect(() => rateLimit(req, res, next)).not.toThrow()
     expect(next).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('createRateLimiter — custom message', () => {
+  it('uses the given 429 message instead of the default one', () => {
+    const rateLimit = createRateLimiter({ windowMs: 60_000, max: 1, message: 'Mensaje propio.' })
+    const { req, res, next } = buildReqRes('9.9.9.1')
+
+    rateLimit(req, res, next)
+    rateLimit(req, res, next)
+
+    expect(res.status).toHaveBeenCalledWith(429)
+    expect(res.json).toHaveBeenCalledWith({ error: 'Mensaje propio.' })
+  })
+})
+
+describe('onlyWhen', () => {
+  it('passes straight through (never touching the limiter) while disabled', () => {
+    const inner = vi.fn()
+    const middleware = onlyWhen(() => false, inner)
+    const { req, res, next } = buildReqRes('9.9.9.2')
+
+    middleware(req, res, next)
+
+    expect(inner).not.toHaveBeenCalled()
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies the wrapped limiter while enabled, re-evaluating the condition on every request', () => {
+    let enabled = true
+    const middleware = onlyWhen(() => enabled, createRateLimiter({ windowMs: 60_000, max: 1 }))
+    const { req, res, next } = buildReqRes('9.9.9.3')
+
+    middleware(req, res, next)
+    middleware(req, res, next)
+    expect(res.status).toHaveBeenCalledWith(429)
+    expect(next).toHaveBeenCalledTimes(1)
+
+    enabled = false
+    middleware(req, res, next)
+    expect(next).toHaveBeenCalledTimes(2)
   })
 })

@@ -4,12 +4,21 @@ import { recordUsageEvent } from '../repositories/usage-events-repository.js'
 import { loadChatConfigurationForOrganization } from '../repositories/chat-config-repository.js'
 import { chatQualificationModelOutputSchema, deriveQualificationResult } from '../schemas/chat.js'
 import type { ChatConfigurationInput, ChatQualificationResult } from '../schemas/chat.js'
-import { aiProvider } from './ai-provider.js'
+import {
+  aiProvider,
+  buildExtractionUserContent,
+  isConfirmedUnbilledRejection,
+  MAX_EXTRACTION_TOKENS,
+  MAX_REPLY_TOKENS,
+} from './ai-provider.js'
+import type { AssistantReplyResult, ChatTurn, ExtractionResult } from './ai-provider.js'
 import { config } from '../config.js'
 import { AppError } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { resolveOrganizationIdForSlug } from './organization-lookup.js'
 import { buildChatSystemPrompt, buildExtractionSystemPrompt } from './system-prompt.js'
+import { buildSettlementUsage, estimateChatMessageUsage, newQuotaRequestId, quotaService } from './quota-service.js'
+import type { CallOutcome, ChatMessageEstimate, MessageCallOutcomes } from './quota-service.js'
 
 type TrustedConfigOutcome =
   | { ok: true; config: ChatConfigurationInput }
@@ -91,6 +100,9 @@ export async function createSession(orgSlug: string, config?: ChatConfigurationI
       }
       throw new AppError(403, 'Este chat no está activo en este momento.')
     }
+    // Before creating anything: an exhausted/suspended organization (or one
+    // whose quota can't be verified right now) gets no new conversation.
+    await assertNewConversationAllowed(organization.organizationId)
     return sessionRepository.create(orgSlug, outcome.config, organization, 'server')
   }
 
@@ -304,6 +316,13 @@ export async function* streamAssistantReply(
   session: StoredSession,
   userMessage: string,
   signal: AbortSignal,
+  /**
+   * Receives this call's outcome for quota settlement: its REAL usage when
+   * the API returned a final message, or a classification of the failure
+   * (see classifyCallFailure()). Only passed while a quota reservation
+   * exists — absent, nothing here classifies anything.
+   */
+  onOutcome?: (outcome: CallOutcome) => void,
 ): AsyncGenerator<string, void, void> {
   sessionRepository.appendTurn(session.id, { role: 'user', content: userMessage })
 
@@ -315,14 +334,25 @@ export async function* streamAssistantReply(
   })
 
   let fullText = ''
-  let next = await generator.next()
-  while (!next.done) {
-    fullText += next.value
-    yield next.value
+  let outputStarted = false
+  let next: IteratorResult<string, AssistantReplyResult>
+  try {
     next = await generator.next()
+    while (!next.done) {
+      fullText += next.value
+      outputStarted = true
+      yield next.value
+      next = await generator.next()
+    }
+  } catch (error) {
+    if (onOutcome) onOutcome(classifyCallFailure(error, outputStarted))
+    throw error
   }
   const result = next.value
   fullText = result.text || fullText
+  if (onOutcome) {
+    onOutcome(result.usage ? { status: 'completed', usage: { ...result.usage, model: result.model } } : { status: 'unknown' })
+  }
 
   sessionRepository.appendTurn(session.id, { role: 'assistant', content: fullText })
 
@@ -343,10 +373,19 @@ export async function* streamAssistantReply(
   }
 }
 
-function renderTranscript(session: StoredSession): string {
-  return session.history
-    .map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Asistente'}: ${turn.content}`)
-    .join('\n')
+/**
+ * Settlement classification of a FAILED Anthropic call. `rejected_unbilled`
+ * only when the API answered with an HTTP error confirmed to carry no
+ * billable usage AND no output had reached us yet; anything else — aborts,
+ * disconnections, timeouts, mid-stream errors, other statuses — is
+ * `unknown`, so that call keeps its reserved upper bound.
+ */
+function classifyCallFailure(error: unknown, outputStarted: boolean): CallOutcome {
+  return !outputStarted && isConfirmedUnbilledRejection(error) ? { status: 'rejected_unbilled' } : { status: 'unknown' }
+}
+
+function renderTranscript(history: readonly ChatTurn[]): string {
+  return history.map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Asistente'}: ${turn.content}`).join('\n')
 }
 
 function stripJsonFences(raw: string): string {
@@ -369,17 +408,36 @@ function stripJsonFences(raw: string): string {
  * itself throws (aborted, network error, etc.), no usage event is recorded
  * at all — nothing here invents a value for a call that didn't complete.
  */
-export async function extractQualification(session: StoredSession, signal: AbortSignal): Promise<ChatQualificationResult | null> {
+export async function extractQualification(
+  session: StoredSession,
+  signal: AbortSignal,
+  /**
+   * Receives this call's outcome for quota settlement: its REAL usage once
+   * the API returned (even if the text later fails to parse), or the
+   * classification of the failure. Never called when the extraction is
+   * skipped (no history) — a call never made costs nothing.
+   */
+  onOutcome?: (outcome: CallOutcome) => void,
+): Promise<ChatQualificationResult | null> {
   if (session.history.length === 0) return null
 
   let raw: string
   try {
-    const result = await aiProvider.extractStructuredText({
-      systemPrompt: buildExtractionSystemPrompt(session.config),
-      transcript: renderTranscript(session),
-      signal,
-    })
+    let result: ExtractionResult
+    try {
+      result = await aiProvider.extractStructuredText({
+        systemPrompt: buildExtractionSystemPrompt(session.config),
+        transcript: renderTranscript(session.history),
+        signal,
+      })
+    } catch (error) {
+      if (onOutcome) onOutcome(classifyCallFailure(error, false))
+      throw error
+    }
     raw = result.text
+    if (onOutcome) {
+      onOutcome(result.usage ? { status: 'completed', usage: { ...result.usage, model: result.model } } : { status: 'unknown' })
+    }
 
     if (result.usage && session.organization?.status === 'resolved') {
       await recordUsageEvent({
@@ -428,7 +486,133 @@ export const CONVERSATION_LIMIT_MESSAGE =
 export interface IncomingMessageHandlers {
   onDelta: (text: string) => void
   onQualification: (qualification: ChatQualificationResult | null) => void
+  /** TECHNICAL limit (CHAT_MAX_USER_MESSAGES) reached for this conversation. */
   onLimitReached: (message: string) => void
+  /**
+   * COMMERCIAL limit: the organization's monthly quota denied this message.
+   * Kept separate from onLimitReached on purpose (different cause, different
+   * logs) even though routes/chat.ts currently renders both the same way.
+   * `message` is always quota-service.ts's generic QUOTA_UNAVAILABLE_MESSAGE.
+   */
+  onQuotaBlocked: (message: string) => void
+}
+
+/**
+ * Session-creation pre-check (only while CHAT_QUOTAS_ENABLED is on). Read-only:
+ * opening a chat never counts a conversation and never reserves budget — a
+ * conversation is counted by the database on its first ACCEPTED message.
+ * Refuses with 403 + the generic quota message when the organization is
+ * exhausted/suspended under 'enforce', and with 503 + a retryable message
+ * when the quota can't be verified at all (fail closed, see quota-service.ts).
+ */
+async function assertNewConversationAllowed(organizationId: string): Promise<void> {
+  if (!config.chatQuotasEnabled) return
+  const decision = await quotaService.checkNewConversation(organizationId)
+  if (decision.proceed) return
+  throw new AppError(decision.reason === 'verification_failed' ? 503 : 403, decision.publicMessage)
+}
+
+// Sessions with a message currently being processed — see tryBeginSessionTurn().
+const sessionsInFlight = new Set<string>()
+
+/**
+ * Prevents two messages of the SAME conversation from being processed at
+ * the same time (double click, a client re-sending while the first request
+ * is still streaming). Each would otherwise reserve and spend separately.
+ * Only active while CHAT_QUOTAS_ENABLED is on — with the flag off this
+ * always succeeds, so existing behavior is untouched. The official frontend
+ * never sends concurrently (its composer is disabled while streaming), so
+ * only duplicate/abusive requests are refused.
+ *
+ * Returns a release function, or null when this session already has a
+ * message in flight. In-memory: protects one backend process (the current
+ * single Railway instance), not several.
+ */
+export function tryBeginSessionTurn(sessionId: string): (() => void) | null {
+  if (!config.chatQuotasEnabled) return () => {}
+  if (sessionsInFlight.has(sessionId)) return null
+  sessionsInFlight.add(sessionId)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    sessionsInFlight.delete(sessionId)
+  }
+}
+
+type QuotaGate =
+  | { status: 'skipped' }
+  | { status: 'proceed'; reservationId: string | null; estimate: ChatMessageEstimate }
+  | { status: 'blocked'; publicMessage: string }
+
+/**
+ * Reserves this message's worst-case cost BEFORE any Anthropic call or any
+ * change to the conversation. Returns `skipped` — without touching the quota
+ * database at all — while CHAT_QUOTAS_ENABLED is off, and for any session
+ * that isn't attributed to a real organization (local/dev `not_configured`).
+ *
+ * The estimate is built from the exact strings the two calls will send:
+ * the reply's system prompt + full history + the new message, and the
+ * extraction's system prompt + its exact user message (minus the reply that
+ * doesn't exist yet, bounded by MAX_REPLY_TOKENS inside the estimator).
+ *
+ * Throws when verification failed and the session must fail closed — the
+ * route turns that into its existing generic, retryable `error` SSE event.
+ */
+async function reserveQuotaIfEnabled(session: StoredSession, userMessage: string): Promise<QuotaGate> {
+  if (!config.chatQuotasEnabled || session.organization?.status !== 'resolved') return { status: 'skipped' }
+
+  const historyAfterMessage: ChatTurn[] = [...session.history, { role: 'user', content: userMessage }]
+  const estimate = estimateChatMessageUsage({
+    replySystemPrompt: buildChatSystemPrompt(session.config),
+    replyMessageContents: historyAfterMessage.map((turn) => turn.content),
+    extractionSystemPrompt: buildExtractionSystemPrompt(session.config),
+    extractionUserContentWithoutReply: buildExtractionUserContent(renderTranscript(historyAfterMessage)),
+    maxReplyTokens: MAX_REPLY_TOKENS,
+    maxExtractionTokens: MAX_EXTRACTION_TOKENS,
+  })
+
+  const decision = await quotaService.reserveForMessage({
+    requestId: newQuotaRequestId(),
+    organizationId: session.organization.organizationId,
+    sessionId: session.id,
+    model: config.anthropicModel,
+    estimate,
+  })
+
+  if (!decision.proceed) {
+    if (decision.reason === 'verification_failed') {
+      // Retryable: routes/chat.ts turns any throw here into its existing
+      // generic `error` SSE event (the internal text is only logged).
+      throw new Error('Quota verification failed — AI call blocked.')
+    }
+    return { status: 'blocked', publicMessage: decision.publicMessage }
+  }
+  return { status: 'proceed', reservationId: decision.reservationId, estimate }
+}
+
+/**
+ * Observability for the estimate's non-guaranteed assumptions (framing
+ * allowances, tokens ≤ bytes): if real usage ever exceeds the reserved
+ * bound, it's logged so shadow-mode validation can catch it. Never changes
+ * what gets settled — the real usage is always what's charged.
+ */
+function warnIfEstimateExceeded(sessionId: string, estimate: ChatMessageEstimate, outcomes: MessageCallOutcomes): void {
+  for (const call of ['reply', 'extraction'] as const) {
+    const outcome = outcomes[call]
+    if (outcome?.status !== 'completed') continue
+    const bound = estimate.calls[call]
+    if (outcome.usage.inputTokens > bound.inputTokens || outcome.usage.outputTokens > bound.outputTokens) {
+      logger.warn('Quota estimate was exceeded by real usage — review estimation allowances', {
+        sessionId,
+        call,
+        estimatedInputTokens: bound.inputTokens,
+        actualInputTokens: outcome.usage.inputTokens,
+        maxOutputTokens: bound.outputTokens,
+        actualOutputTokens: outcome.usage.outputTokens,
+      })
+    }
+  }
 }
 
 /**
@@ -461,6 +645,18 @@ export interface IncomingMessageHandlers {
  * is refreshed (or blocked) here, so streamAssistantReply()/
  * extractQualification() below can always assume `session.config` is
  * trustworthy by the time they run.
+ *
+ * The monthly quota reservation runs FOURTH (only while CHAT_QUOTAS_ENABLED
+ * is on), still before any call to Anthropic and before the user turn is
+ * appended: a denied reservation fires `onQuotaBlocked` and returns with
+ * the conversation untouched; a verification failure that must fail closed
+ * throws, exactly like the two checks above. Once a reservation exists, it
+ * is ALWAYS settled in `finally`, call by call (quota-service.ts::
+ * buildSettlementUsage()): a completed call settles its real usage, a call
+ * rejected by the API with confirmed-unbilled evidence (or never made)
+ * settles zero, and any other failure — abort, disconnection, timeout,
+ * mid-stream error, unconfirmed status — keeps that call's own upper bound.
+ * Settlement never throws.
  */
 export async function handleIncomingMessage(
   session: StoredSession,
@@ -476,10 +672,38 @@ export async function handleIncomingMessage(
   await ensureOrganizationResolved(session)
   await ensureConfigTrusted(session)
 
-  for await (const delta of streamAssistantReply(session, userMessage, signal)) {
-    handlers.onDelta(delta)
+  const quota = await reserveQuotaIfEnabled(session, userMessage)
+  if (quota.status === 'blocked') {
+    handlers.onQuotaBlocked(quota.publicMessage)
+    return
   }
 
-  const qualification = await extractQualification(session, signal)
-  handlers.onQualification(qualification)
+  // Per-call outcomes are only collected when there is a reservation to
+  // settle — with quotas off (or for off/unconfigured organizations) no
+  // callback is passed and no failure is classified at all.
+  const metered = quota.status === 'proceed' && quota.reservationId !== null
+  const outcomes: MessageCallOutcomes = {}
+  try {
+    for await (const delta of streamAssistantReply(
+      session,
+      userMessage,
+      signal,
+      metered ? (outcome) => (outcomes.reply = outcome) : undefined,
+    )) {
+      handlers.onDelta(delta)
+    }
+
+    const qualification = await extractQualification(
+      session,
+      signal,
+      metered ? (outcome) => (outcomes.extraction = outcome) : undefined,
+    )
+    handlers.onQualification(qualification)
+  } finally {
+    if (quota.status === 'proceed' && quota.reservationId) {
+      const usage = buildSettlementUsage(quota.estimate, outcomes)
+      warnIfEstimateExceeded(session.id, quota.estimate, outcomes)
+      await quotaService.settle(quota.reservationId, usage)
+    }
+  }
 }

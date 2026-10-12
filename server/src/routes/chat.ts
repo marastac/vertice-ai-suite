@@ -1,10 +1,11 @@
 import { Router } from 'express'
-import { createRateLimiter } from '../lib/rate-limit.js'
+import { config } from '../config.js'
+import { createRateLimiter, onlyWhen } from '../lib/rate-limit.js'
 import { AppError } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { createSessionBodySchema, postMessageBodySchema } from '../schemas/chat.js'
 import { aiProvider } from '../services/ai-provider.js'
-import { createSession, getSession, handleIncomingMessage } from '../services/chat-service.js'
+import { createSession, getSession, handleIncomingMessage, tryBeginSessionTurn } from '../services/chat-service.js'
 
 export const chatRouter = Router()
 
@@ -14,7 +15,22 @@ const REQUEST_TIMEOUT_MS = 45_000
 // can't exhaust the Anthropic quota for everyone else.
 const rateLimit = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 40 })
 
-chatRouter.post('/sessions', rateLimit, async (req, res, next) => {
+// TECHNICAL protection added with monthly quotas, active only while
+// CHAT_QUOTAS_ENABLED is on (unchanged behavior while off): with quotas on,
+// every new session costs a quota-status read, so mass session creation from
+// one IP is capped on its own, on top of the shared limiter above. A real
+// visitor opens one session per page load. Empty sessions never consume
+// budget either way — conversations are counted on their first accepted message.
+const sessionCreationLimit = onlyWhen(
+  () => config.chatQuotasEnabled,
+  createRateLimiter({
+    windowMs: 10 * 60 * 1000,
+    max: 10,
+    message: 'Se iniciaron demasiadas conversaciones desde esta conexión. Espera unos minutos e inténtalo de nuevo.',
+  }),
+)
+
+chatRouter.post('/sessions', rateLimit, sessionCreationLimit, async (req, res, next) => {
   try {
     if (!aiProvider.isConfigured) {
       throw new AppError(503, 'El chat con IA no está configurado en el servidor todavía.')
@@ -48,6 +64,7 @@ chatRouter.post('/sessions', rateLimit, async (req, res, next) => {
 
 chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, next) => {
   const { sessionId } = req.params
+  let releaseTurn: (() => void) | null = null
 
   try {
     if (!aiProvider.isConfigured) {
@@ -62,6 +79,13 @@ chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, nex
     const parsedBody = postMessageBodySchema.safeParse(req.body)
     if (!parsedBody.success) {
       throw new AppError(400, parsedBody.error.issues[0]?.message ?? 'Mensaje no válido.')
+    }
+
+    // One message at a time per conversation (no-op while CHAT_QUOTAS_ENABLED
+    // is off) — see chat-service.ts::tryBeginSessionTurn().
+    releaseTurn = tryBeginSessionTurn(sessionId)
+    if (!releaseTurn) {
+      throw new AppError(409, 'Todavía estamos respondiendo tu mensaje anterior. Espera la respuesta antes de enviar otro.')
     }
 
     const controller = new AbortController()
@@ -94,6 +118,11 @@ chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, nex
         onDelta: (text) => sendEvent('delta', { text }),
         onQualification: (qualification) => sendEvent('qualification', { qualification }),
         onLimitReached: (message) => sendEvent('conversation_limit_reached', { message }),
+        // Same SSE event on purpose: the existing frontend already renders it
+        // as a calm closing message (no frontend change needed). Only the
+        // text differs — the generic QUOTA_UNAVAILABLE_MESSAGE, which never
+        // mentions plans, limits or amounts.
+        onQuotaBlocked: (message) => sendEvent('conversation_limit_reached', { message }),
       })
       sendEvent('done', {})
     } catch (streamError) {
@@ -106,8 +135,10 @@ chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, nex
       clearTimeout(timeout)
       responseEnded = true
       res.end()
+      releaseTurn()
     }
   } catch (error) {
+    releaseTurn?.()
     next(error)
   }
 })

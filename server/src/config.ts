@@ -24,6 +24,14 @@ const chatMaxUserMessagesPerConversation = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 25
 })()
 
+// Global kill switch for per-organization monthly quotas (see
+// services/quota-service.ts and supabase/migrations-usage-quotas.sql).
+// OFF unless explicitly set to "true" (case-insensitive) — any other value,
+// including unset, malformed, "1" or "yes", keeps it off. While off, the
+// chat never calls any quota RPC or reads any quota table, so it works
+// exactly as before and does not require that migration to be applied.
+const chatQuotasEnabled = process.env.CHAT_QUOTAS_ENABLED?.trim().toLowerCase() === 'true'
+
 // Webhooks feature: the backend's own Supabase credentials, used only for
 // webhook_configurations/webhook_deliveries (config CRUD, the delivery
 // worker's claim/write). Nothing else in this backend touches Supabase.
@@ -68,6 +76,7 @@ export const config = {
   anthropicModel: process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-4-8',
   isAiConfigured: Boolean(anthropicApiKey),
   chatMaxUserMessagesPerConversation,
+  chatQuotasEnabled,
   supabaseUrl,
   supabaseServiceRoleKey,
   isWebhooksConfigured: Boolean(supabaseUrl && supabaseServiceRoleKey),

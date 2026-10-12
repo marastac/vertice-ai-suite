@@ -1,6 +1,8 @@
 import { createApp } from './app.js'
 import { config } from './config.js'
 import { logger } from './lib/logger.js'
+import { checkQuotaPricingAtStartup } from './services/quota-pricing-check.js'
+import { startQuotaReconciler, stopQuotaReconciler } from './services/quota-reconciler.js'
 import { startWebhookWorker, stopWebhookWorker } from './services/webhook-worker.js'
 
 const app = createApp()
@@ -26,11 +28,16 @@ const server = app.listen(config.port, () => {
   // unconfigured or slow-to-start worker must never delay or block the
   // rest of the backend (chat/Anthropic) from serving requests.
   startWebhookWorker()
+  // Same reasoning; a no-op (one log line) while CHAT_QUOTAS_ENABLED is off.
+  startQuotaReconciler()
+  // Read-only, never throws, not awaited; also a no-op while the flag is off.
+  void checkQuotaPricingAtStartup()
 })
 
 function shutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down.`)
   stopWebhookWorker()
+  stopQuotaReconciler()
   server.close(() => process.exit(0))
 }
 

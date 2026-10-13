@@ -1216,6 +1216,111 @@ revoke all on function public.link_chat_session_lead(uuid, uuid) from public;
 revoke all on function public.link_chat_session_lead(uuid, uuid) from anon, authenticated;
 grant execute on function public.link_chat_session_lead(uuid, uuid) to anon, authenticated;
 
+-- ── Aprovisionamiento de la organización personal ─────────────────────────
+-- Mirrors supabase/migrations-org-bootstrap.sql exactly (sin verificación ni
+-- reversión) — ver ese archivo para el razonamiento completo. Crea en UNA
+-- transacción, serializada por usuario e idempotente, la organización
+-- personal + membresía owner + team_member del primer acceso. La llama
+-- OrganizationProvider.tsx (vía organization-supabase-repository.ts) en lugar
+-- de las antiguas inserciones separadas desde el navegador.
+create or replace function public.bootstrap_personal_organization()
+returns table (organization_id uuid, organization_slug text, created boolean)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+-- Las columnas de salida (organization_id, …) se llaman igual que columnas
+-- reales: dentro de las sentencias SQL, el nombre se refiere a la COLUMNA.
+#variable_conflict use_column
+declare
+  v_uid uuid := auth.uid();
+  v_email text := nullif(lower(trim(coalesce(auth.jwt() ->> 'email', ''))), '');
+  v_base_name text;
+  v_org_name text;
+  v_base_slug text;
+  v_slug text;
+  v_org_id uuid;
+  v_existing_id uuid;
+  v_existing_slug text;
+  v_attempt integer;
+begin
+  if v_uid is null then
+    raise exception 'AUTH_REQUIRED' using errcode = '42501';
+  end if;
+
+  -- Serializa a ESTE usuario hasta el final de la transacción. Una segunda
+  -- llamada concurrente espera aquí y, al continuar, ve ya confirmada la
+  -- membresía de la primera (READ COMMITTED: nuevo snapshot por sentencia).
+  perform pg_advisory_xact_lock(hashtext('bootstrap_personal_organization'), hashtext(v_uid::text));
+
+  select m.organization_id, o.slug
+    into v_existing_id, v_existing_slug
+  from public.organization_members m
+  join public.organizations o on o.id = m.organization_id
+  where m.user_id = v_uid
+  order by m.created_at asc, m.organization_id asc
+  limit 1;
+
+  if v_existing_id is not null then
+    return query select v_existing_id, v_existing_slug, false;
+    return;
+  end if;
+
+  -- Mismo criterio que deriveOrganizationName() en el frontend: full_name,
+  -- si no la parte local del email, si no un texto genérico.
+  v_base_name := coalesce(
+    nullif(trim(auth.jwt() -> 'user_metadata' ->> 'full_name'), ''),
+    nullif(split_part(coalesce(v_email, ''), '@', 1), ''),
+    'Mi organización'
+  );
+  v_base_name := left(v_base_name, 120);
+  v_org_name := 'Organización de ' || v_base_name;
+
+  -- Slug equivalente al slugify() del frontend: minúsculas, sin acentos,
+  -- solo [a-z0-9-]. Reintenta con sufijo aleatorio si el slug ya existe.
+  v_base_slug := regexp_replace(
+    translate(lower(v_org_name), 'áàäâãåéèëêíìïîóòöôõúùüûñç', 'aaaaaaeeeeiiiiooooouuuunc'),
+    '[^a-z0-9]+', '-', 'g'
+  );
+  v_base_slug := trim(both '-' from v_base_slug);
+  if v_base_slug = '' then
+    v_base_slug := 'org';
+  end if;
+
+  for v_attempt in 0..9 loop
+    v_slug := case when v_attempt = 0 then v_base_slug
+                   else v_base_slug || '-' || substr(md5(random()::text || clock_timestamp()::text), 1, 4) end;
+    insert into public.organizations (name, slug, created_by)
+    values (v_org_name, v_slug, v_uid)
+    on conflict (slug) do nothing
+    returning id into v_org_id;
+    exit when v_org_id is not null;
+  end loop;
+
+  if v_org_id is null then
+    raise exception 'ORG_SLUG_UNAVAILABLE';
+  end if;
+
+  insert into public.organization_members (organization_id, user_id, role)
+  values (v_org_id, v_uid, 'owner');
+
+  -- team_member del owner para que "Persona asignada" no esté vacío. Sin
+  -- email en el JWT (p. ej. acceso por teléfono) no se crea, igual que antes.
+  if v_email is not null then
+    insert into public.team_members (organization_id, name, email, role)
+    values (v_org_id, v_base_name, v_email, 'owner')
+    on conflict (organization_id, email) do nothing;
+  end if;
+
+  return query select v_org_id, v_slug, true;
+end;
+$$;
+
+-- Solo usuarios autenticados. anon y PUBLIC no pueden ejecutarla (Supabase
+-- concede EXECUTE a anon/authenticated por defecto: se revoca explícitamente).
+revoke all on function public.bootstrap_personal_organization() from public, anon, authenticated;
+grant execute on function public.bootstrap_personal_organization() to authenticated;
+
 -- ── Webhooks (first real integration) ────────────────────────────────────
 -- See supabase/migrations-webhooks.sql for the full design rationale (why
 -- a trigger + outbox instead of pg_net, why no SELECT policy at all on

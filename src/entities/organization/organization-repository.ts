@@ -30,8 +30,25 @@ export interface UpdateOrganizationSettingsInput {
   brandColor?: string
 }
 
+export interface BootstrapPersonalOrganizationResult {
+  organizationId: string
+  /** false when the caller already belonged to an organization (nothing was created). */
+  created: boolean
+}
+
 export interface OrganizationRepository {
   listMyMemberships(userId: string): Promise<OrganizationMembership[]>
+  /**
+   * First-login provisioning. Returns the caller's existing organization, or
+   * creates their personal one (organization + owner membership + owner
+   * team_member) in ONE atomic, per-user-serialized, idempotent server call
+   * — see supabase/migrations-org-bootstrap.sql. Safe to call concurrently
+   * (several tabs, React StrictMode, repeated auth events): at most one
+   * organization is ever created. The name/email come from the caller's
+   * JWT, never from this call.
+   */
+  bootstrapPersonalOrganization(): Promise<BootstrapPersonalOrganizationResult>
+  /** Kept for a future "create another organization" flow — first-login provisioning uses bootstrapPersonalOrganization(). */
   createOrganization(name: string, createdBy: string): Promise<Organization>
   addSelfAsOwner(organizationId: string, userId: string): Promise<void>
   createInvite(input: CreateInviteInput): Promise<OrganizationInvite>
@@ -98,6 +115,10 @@ function readLocalOrganization(): Organization {
 export const localOrganizationRepository: OrganizationRepository = {
   async listMyMemberships() {
     return [{ organization: readLocalOrganization(), role: 'owner' }]
+  },
+  async bootstrapPersonalOrganization() {
+    // The local pseudo-organization always exists — nothing to provision.
+    return { organizationId: LOCAL_ORGANIZATION_ID, created: false }
   },
   async createOrganization() {
     return readLocalOrganization()

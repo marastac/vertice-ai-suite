@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useAuth } from '@/entities/auth'
-import { activeTeamMemberRepository } from '@/entities/team-member'
 import { dataBackend } from '@/shared/lib/data-backend'
 import { activeOrganizationRepository } from './active-organization-repository'
 import { getLastActiveOrganizationId, setLastActiveOrganizationId } from './active-organization-storage'
@@ -9,7 +8,8 @@ import { completeOrganizationOnboarding } from './onboarding-service'
 import { OrganizationContext } from './organization-context'
 import { getPendingInviteToken } from './pending-invite-storage'
 import type { OrganizationContextValue } from './organization-context'
-import type { UpdateOrganizationSettingsInput } from './organization-repository'
+import type { BootstrapPersonalOrganizationResult, UpdateOrganizationSettingsInput } from './organization-repository'
+import { createSingleFlight } from './single-flight'
 import { LOCAL_ORGANIZATION_ID } from './types'
 import type { BusinessType, Organization, OrganizationMembership, OrganizationRole } from './types'
 
@@ -18,21 +18,27 @@ import type { BusinessType, Organization, OrganizationMembership, OrganizationRo
 const LOCAL_ORGANIZATION: Organization = { id: LOCAL_ORGANIZATION_ID, name: 'Organización local', slug: 'vertice-agency' }
 const LOCAL_MEMBERSHIP: OrganizationMembership = { organization: LOCAL_ORGANIZATION, role: 'owner' }
 
-function deriveOrganizationName(user: { email?: string | null; user_metadata?: Record<string, unknown> }): string {
-  const fullName = typeof user.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : undefined
-  const base = fullName?.trim() || user.email?.split('@')[0] || 'Mi organización'
-  return `Organización de ${base}`
-}
+// One in-flight first-login provisioning per user id within this tab (React
+// StrictMode's double effect, several auth events in a row). Module-level on
+// purpose: it must survive the provider's effect being torn down and re-run.
+// Across tabs, bootstrap_personal_organization()'s per-user lock is what
+// guarantees a single organization.
+const provisionOnce = createSingleFlight<BootstrapPersonalOrganizationResult>()
 
 export function OrganizationProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
+  // Keyed on the user's ID, not the `user` object: AuthProvider hands out a
+  // new `user` reference on every session update (getSession, INITIAL_SESSION,
+  // SIGNED_IN, TOKEN_REFRESHED, …) for the same person, which used to re-run
+  // this whole effect — and, on a first login, race a second provisioning.
+  const userId = user?.id ?? null
   const [memberships, setMemberships] = useState<OrganizationMembership[]>([])
   const [activeOrganizationId, setActiveOrganizationId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!user) {
+    if (!userId) {
       setMemberships([])
       setActiveOrganizationId(null)
       setError(null)
@@ -51,7 +57,7 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
       setIsLoading(true)
       setError(null)
       try {
-        let myMemberships = await activeOrganizationRepository.listMyMemberships(user!.id)
+        let myMemberships = await activeOrganizationRepository.listMyMemberships(userId!)
 
         // Skip auto-provisioning while AcceptInvitePage has a fresh pending-invite
         // marker set — this provider wraps the whole router (see App.tsx), so it
@@ -67,22 +73,15 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
           // organization so they're never stuck on an empty dashboard —
           // confirmed with the product owner as the Phase 8 approach,
           // rather than adding an "organization name" field to the Phase 7
-          // Register form. Also seeds one team_members row for the owner
-          // themselves, so the "Persona asignada" dropdown on a brand-new
-          // organization isn't empty on day one (there's no team-management
-          // UI yet to add one otherwise).
-          const org = await activeOrganizationRepository.createOrganization(deriveOrganizationName(user!), user!.id)
-          await activeOrganizationRepository.addSelfAsOwner(org.id, user!.id)
-          const ownerName = deriveOrganizationName(user!).replace(/^Organización de /, '')
-          if (user!.email) {
-            await activeTeamMemberRepository.create({
-              organizationId: org.id,
-              name: ownerName,
-              email: user!.email,
-              role: 'owner',
-            })
-          }
-          myMemberships = await activeOrganizationRepository.listMyMemberships(user!.id)
+          // Register form. The server creates the organization, the owner
+          // membership and the owner's team_members row (so the "Persona
+          // asignada" dropdown isn't empty on day one) in ONE atomic,
+          // per-user-serialized, idempotent call — see
+          // supabase/migrations-org-bootstrap.sql. If another tab (or an
+          // earlier run) already provisioned, it just returns that
+          // organization; nothing is ever created twice.
+          await provisionOnce(userId!, () => activeOrganizationRepository.bootstrapPersonalOrganization())
+          myMemberships = await activeOrganizationRepository.listMyMemberships(userId!)
         }
 
         if (cancelled) return
@@ -112,7 +111,7 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [user])
+  }, [userId])
 
   const switchOrganization = useCallback(
     (organizationId: string) => {

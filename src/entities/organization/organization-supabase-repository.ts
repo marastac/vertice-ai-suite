@@ -46,6 +46,14 @@ interface AcceptInviteRow {
   organization_slug: string
 }
 
+// Shape returned by bootstrap_personal_organization() — see
+// supabase/migrations-org-bootstrap.sql.
+interface BootstrapRow {
+  organization_id: string
+  organization_slug: string
+  created: boolean
+}
+
 function normalizeOrganization(value: MembershipRow['organizations']): Organization {
   // supabase-js returns the joined row as an object for a many-to-one
   // relationship, but its generated types are conservative and allow an
@@ -108,6 +116,17 @@ export const supabaseOrganizationRepository: OrganizationRepository = {
       role: row.role,
       organization: normalizeOrganization(row.organizations),
     }))
+  },
+
+  async bootstrapPersonalOrganization() {
+    // One atomic, per-user-serialized server call — see
+    // supabase/migrations-org-bootstrap.sql. Replaces the old sequence of
+    // separate browser inserts (create → add owner → team member), which
+    // could race into duplicate organizations or leave an orphan behind.
+    const { data, error } = await supabase.rpc('bootstrap_personal_organization').single()
+    if (error) throw error
+    const row = data as BootstrapRow
+    return { organizationId: row.organization_id, created: row.created }
   },
 
   async createOrganization(name, createdBy) {

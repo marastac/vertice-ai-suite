@@ -14,6 +14,7 @@
     "build:server": "npm run build --prefix server",
     "lint": "oxlint",
     "test:all:safe": "node scripts/test-all-safe.mjs",
+    "test:staging:smoke": "node scripts/staging-smoke.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

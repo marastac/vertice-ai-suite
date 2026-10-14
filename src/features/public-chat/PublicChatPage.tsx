@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, ShieldCheck, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/shared/ui/Card'
 import { Button } from '@/shared/ui/Button'
 import {
+  ChatSessionError,
   activeChatSessionRepository,
   createRemoteChatSession,
   streamChatMessage,
@@ -15,6 +16,7 @@ import {
 import type { ChatMessage, ChatQualificationResult } from '@/entities/chat'
 import { ChatBubble } from './components/ChatBubble'
 import { ChatComposer } from './components/ChatComposer'
+import { getConnectErrorTitle, getDevelopmentUnavailableCopy, getProductionUnavailableCopy } from './unavailable-copy'
 
 function ChatShell({ children }: { children: ReactNode }) {
   return (
@@ -57,7 +59,7 @@ export function PublicChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
-  const [connectError, setConnectError] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState<{ message: string; retryable: boolean } | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
   const [lastUserMessage, setLastUserMessage] = useState<string | null>(null)
   // Set when the backend's technical message-count protection is reached
@@ -95,7 +97,12 @@ export function PublicChatPage() {
       ])
     } catch (error) {
       hasCreatedSessionRef.current = false
-      setConnectError(error instanceof Error ? error.message : 'No se pudo iniciar la conversación.')
+      setConnectError({
+        message: error instanceof Error ? error.message : 'No se pudo iniciar la conversación.',
+        // Only a temporary failure (network, 5xx, 429) offers "Reintentar" —
+        // a 403 (chat inactive, quota exhausted) or 404 won't change on retry.
+        retryable: error instanceof ChatSessionError ? error.retryable : true,
+      })
     } finally {
       setIsConnecting(false)
     }
@@ -226,13 +233,14 @@ export function PublicChatPage() {
     )
   }
 
+  // This page is seen by the public (visitors of our customers' sites): in a
+  // production build these states show calm, generic copy. The developer
+  // hints (how to start the backend, where the API key goes) are only shown
+  // in `npm run dev` — see unavailable-copy.ts.
   if (!health?.reachable) {
     return (
       <ChatShell>
-        <MessagePanel
-          title="No se pudo conectar con el servidor"
-          description="El backend de MAASTAC AI no está disponible. Si eres parte del equipo, ejecuta 'npm run dev:server' y recarga la página."
-        />
+        <MessagePanel {...(import.meta.env.DEV ? getDevelopmentUnavailableCopy : getProductionUnavailableCopy)('backend-unreachable')} />
       </ChatShell>
     )
   }
@@ -240,10 +248,7 @@ export function PublicChatPage() {
   if (!health.aiConfigured) {
     return (
       <ChatShell>
-        <MessagePanel
-          title="La IA no está configurada"
-          description="El equipo todavía no ha configurado la clave de la API de Anthropic en el servidor (server/.env). El resto de la aplicación sigue funcionando con normalidad."
-        />
+        <MessagePanel {...(import.meta.env.DEV ? getDevelopmentUnavailableCopy : getProductionUnavailableCopy)('ai-not-configured')} />
       </ChatShell>
     )
   }
@@ -254,9 +259,9 @@ export function PublicChatPage() {
         <Card className="w-full max-w-2xl">
           <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
             <AlertTriangle className="size-8 text-amber-400" />
-            <h1 className="text-lg font-semibold text-white">No se pudo iniciar la conversación</h1>
-            <p className="max-w-sm text-sm text-slate-400">{connectError}</p>
-            <Button onClick={handleRetryConnect}>Reintentar</Button>
+            <h1 className="text-lg font-semibold text-white">{getConnectErrorTitle(connectError.retryable)}</h1>
+            <p className="max-w-sm text-sm text-slate-400">{connectError.message}</p>
+            {connectError.retryable && <Button onClick={handleRetryConnect}>Reintentar</Button>}
           </CardContent>
         </Card>
       </ChatShell>

@@ -1,4 +1,13 @@
+import {
+  CHAT_SESSION_FALLBACK_ERROR_MESSAGE,
+  CHAT_SESSION_NETWORK_ERROR_MESSAGE,
+  ChatSessionError,
+  isRetryableSessionStatus,
+} from './chat-session-errors'
 import type { ChatConfiguration, ChatQualificationResult } from './types'
+
+// Re-exported so existing `import { ChatSessionError } from '@/entities/chat'` keeps working.
+export { ChatSessionError }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8787'
 
@@ -40,14 +49,24 @@ export interface CreateRemoteSessionResult {
  * function's contract with the backend is otherwise unchanged.
  */
 export async function createRemoteChatSession(orgSlug: string, config: ChatConfiguration): Promise<CreateRemoteSessionResult> {
-  const response = await fetch(`${API_BASE_URL}/api/chat/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ orgSlug, config }),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/api/chat/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgSlug, config }),
+    })
+  } catch {
+    // A network failure surfaces as a raw browser TypeError ("Failed to
+    // fetch") — never show that to a visitor.
+    throw new ChatSessionError(CHAT_SESSION_NETWORK_ERROR_MESSAGE, true)
+  }
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, 'No se pudo iniciar la conversación. Inténtalo de nuevo.'))
+    throw new ChatSessionError(
+      await readErrorMessage(response, CHAT_SESSION_FALLBACK_ERROR_MESSAGE),
+      isRetryableSessionStatus(response.status),
+    )
   }
 
   return response.json()

@@ -13,6 +13,7 @@
     "build": "tsc -b && vite build",
     "build:server": "npm run build --prefix server",
     "lint": "oxlint",
+    "test:all:safe": "node scripts/test-all-safe.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

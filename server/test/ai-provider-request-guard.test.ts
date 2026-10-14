@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-// GUARD for the quota cost model (DISENO_RIESGO_3.txt, P13/P14): the quota
+// GUARD for the quota cost model (CLAUDE.md, "Monthly chat quotas"): the quota
 // prices every call with plain input/output rates, which is only correct
 // while requests use none of the features billed differently (prompt
 // caching, fast mode, inference_geo, …). If someone adds one of them, this

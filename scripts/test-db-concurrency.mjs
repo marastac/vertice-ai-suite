@@ -11,6 +11,8 @@
 //   L1     chat lead upsert (supabase/migrations-chat-lead-isolation.sql):
 //          simultaneous updates of the same conversation's lead, mixed with
 //          calls naming another organization, end with ONE intact lead.
+//   S1     durable backend chat sessions (supabase/migrations-backend-chat-sessions.sql):
+//          20 out-of-order concurrent snapshot saves end at the highest version.
 //
 // DISPOSABLE POSTGRES ONLY. Concurrency needs COMMITTED data, so this script
 // writes (and afterwards deletes) its own test organizations. To make it
@@ -346,10 +348,26 @@ async function chatLeadUpsert() {
   check('L1 una actividad por llamada legítima (y ninguna de las rechazadas)', activities === 10, `actividades=${activities}`)
 }
 
+// S1 — 20 concurrent saves of the same durable session, versions shuffled:
+// the stored copy must end at the highest version (never an older state).
+async function durableSessionSaves() {
+  const id = randomUUID()
+  const versions = Array.from({ length: 20 }, (_, i) => i + 1).sort(() => Math.random() - 0.5)
+  const results = await simultaneously(
+    versions.map((v) => `select public.save_backend_chat_session('${id}', '${org.other}', 'qc-other-${run}', '{"id":"${id}","marker":${v}}', ${v})::text;`),
+  )
+  const errors = results.filter((r) => !r.ok)
+  const [version, marker] = (await sql(`select version || '|' || (state ->> 'marker') from public.backend_chat_sessions where id = '${id}'`)).split('|').map(Number)
+  const firstError = errors[0]?.err.split('\n')[0] ?? ''
+  check('S1 20 escrituras simultáneas desordenadas: sin errores', errors.length === 0, firstError)
+  check('S1 queda la versión más alta y su estado', version === 20 && marker === 20, `version=${version}, estado=${marker}`)
+}
+
 try {
   await main()
   await organizationBootstrap()
   await chatLeadUpsert()
+  await durableSessionSaves()
 } catch (error) {
   results.push({ name: 'ejecución', ok: false, detail: error instanceof Error ? error.message : String(error) })
 } finally {
@@ -359,7 +377,7 @@ try {
 const leftovers = Number((await psql(`select count(*) from public.organizations where slug like 'qc-%-${run}'`)).out || '0')
 check('limpieza: no quedan organizaciones de prueba', leftovers === 0, `quedan=${leftovers}`)
 
-console.log(`\n══════════ concurrencia: cuotas + aprovisionamiento + leads de chat (contenedor ${container}, sin red) ══════════`)
+console.log(`\n══════════ concurrencia: cuotas + aprovisionamiento + leads de chat + sesiones durables (contenedor ${container}, sin red) ══════════`)
 for (const r of results) console.log(`${r.ok ? '✔' : '✖'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
 const failed = results.filter((r) => !r.ok).length
 console.log(`\nRESULTADO: ${results.length - failed} OK, ${failed} fallos`)

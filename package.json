@@ -16,6 +16,8 @@
     "test:all:safe": "node scripts/test-all-safe.mjs",
     "test:staging:smoke": "node scripts/staging-smoke.mjs",
     "test:db:concurrency": "node scripts/test-db-concurrency.mjs",
+    "backup:staging": "node scripts/staging-backup.mjs",
+    "backup:staging:verify": "node scripts/staging-backup-verify.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

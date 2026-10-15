@@ -12,10 +12,24 @@ interface Bucket {
  */
 export function createRateLimiter(options: { windowMs: number; max: number; message?: string }) {
   const buckets = new Map<string, Bucket>()
+  let nextSweepAt = 0
 
-  return function rateLimit(req: Request, res: Response, next: NextFunction) {
+  // Expired windows are dropped at most once per window, lazily on the next
+  // request. Without this, every distinct IP that ever called a public
+  // endpoint stayed in memory forever — an unbounded leak under rotating
+  // addresses (IPv6, botnets) on a long-running process.
+  function sweepExpired(now: number) {
+    if (now < nextSweepAt) return
+    nextSweepAt = now + options.windowMs
+    for (const [key, bucket] of buckets) {
+      if (bucket.resetAt <= now) buckets.delete(key)
+    }
+  }
+
+  function rateLimit(req: Request, res: Response, next: NextFunction) {
     const key = req.ip ?? 'unknown'
     const now = Date.now()
+    sweepExpired(now)
     const bucket = buckets.get(key)
 
     if (!bucket || bucket.resetAt <= now) {
@@ -34,6 +48,10 @@ export function createRateLimiter(options: { windowMs: number; max: number; mess
     bucket.count += 1
     next()
   }
+
+  /** Number of IPs currently tracked — exposed for tests and diagnostics only. */
+  rateLimit.trackedKeyCount = () => buckets.size
+  return rateLimit
 }
 
 /**

@@ -132,3 +132,45 @@ describe('onlyWhen', () => {
     expect(next).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('createRateLimiter — memory', () => {
+  it('drops expired windows: thousands of one-off IPs do not stay in memory forever', () => {
+    vi.useFakeTimers()
+    try {
+      const rateLimit = createRateLimiter({ windowMs: 60_000, max: 5 })
+      for (let i = 0; i < 5_000; i++) {
+        const { req, res, next } = buildReqRes(`2001:db8::${i.toString(16)}`)
+        rateLimit(req, res, next)
+      }
+      expect(rateLimit.trackedKeyCount()).toBe(5_000)
+
+      vi.advanceTimersByTime(60_001)
+      const later = buildReqRes('203.0.113.7')
+      rateLimit(later.req, later.res, later.next)
+
+      expect(rateLimit.trackedKeyCount()).toBe(1)
+      expect(later.next).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the sweep never forgets an IP whose window is still open (a blocked IP stays blocked)', () => {
+    vi.useFakeTimers()
+    try {
+      const rateLimit = createRateLimiter({ windowMs: 60_000, max: 1 })
+      const abuser = buildReqRes('198.51.100.1')
+      rateLimit(abuser.req, abuser.res, abuser.next) // allowed, window opens
+
+      vi.advanceTimersByTime(30_000)
+      const other = buildReqRes('198.51.100.2')
+      rateLimit(other.req, other.res, other.next) // triggers a sweep mid-window
+      rateLimit(abuser.req, abuser.res, abuser.next) // still inside its window → blocked
+
+      expect(abuser.next).toHaveBeenCalledTimes(1)
+      expect(abuser.res.status).toHaveBeenCalledWith(429)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

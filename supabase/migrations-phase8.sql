@@ -1,3 +1,7 @@
+-- ⚠ HISTÓRICA — NO VOLVER A EJECUTAR en un proyecto que ya tenga
+-- migrations-public-read-hardening.sql: recrearía las políticas SELECT
+-- públicas de organizations, forms y chat_configuration (hallazgo H2).
+
 -- Lead AI — Phase 8 upgrade script for an EXISTING project
 --
 -- Use this instead of schema.sql if your Supabase project already has

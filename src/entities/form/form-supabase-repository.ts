@@ -1,5 +1,7 @@
 import { supabase } from '@/shared/lib/supabase-client'
 import type { FormRepository } from './form-repository'
+import { isPossibleFormId, publicFormFromRow } from './public-form'
+import type { PublicFormRow } from './public-form'
 import type { FormStatus } from './schema'
 import type { FormQuestion, QualificationForm } from './types'
 
@@ -51,11 +53,14 @@ export const supabaseFormRepository: FormRepository = {
 
   async getPublic(id) {
     // Deliberately no organization_id filter — see the interface doc
-    // comment in form-repository.ts. Relies on forms' SELECT RLS policy
-    // staying public (schema.sql).
-    const { data, error } = await supabase.from('forms').select('*').eq('id', id).maybeSingle()
+    // comment in form-repository.ts. Reads through the get_public_form()
+    // RPC: `forms` itself is members-only since
+    // supabase/migrations-public-read-hardening.sql, and the RPC returns
+    // ACTIVE forms only, without their scoring.
+    if (!isPossibleFormId(id)) return undefined
+    const { data, error } = await supabase.rpc('get_public_form', { p_form_id: id }).maybeSingle()
     if (error) throw error
-    return data ? fromRow(data) : undefined
+    return data ? publicFormFromRow(data as PublicFormRow) : undefined
   },
 
   async create(input) {

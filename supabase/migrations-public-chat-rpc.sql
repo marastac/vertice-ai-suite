@@ -1,3 +1,7 @@
+-- ⚠ HISTÓRICA — NO VOLVER A EJECUTAR en un proyecto que ya tenga
+-- migrations-chat-lead-isolation.sql: reinstalaría la versión de
+-- upsert_chat_lead() sin aislamiento entre organizaciones (hallazgo H1).
+
 -- Lead AI — public chat lead-upsert RPC (bug fix, existing project)
 --
 -- Run this once in the Supabase project's SQL editor. Adds ONE new function,

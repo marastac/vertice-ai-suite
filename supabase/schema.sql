@@ -23,18 +23,15 @@
 -- `organization_id`. Row Level Security enforces that a user can only
 -- read/write rows in organizations they are a member of
 -- (`organization_members`), via the `is_org_member`/`is_org_admin` helper
--- functions defined right below. Three tables — `organizations`, `forms`,
--- `chat_configuration` — keep a PUBLIC (unauthenticated) SELECT policy on
--- purpose, because `/f/:formId` and `/c/:orgSlug` are pre-existing,
--- deliberately no-login product features (a lead filling out a form, or a
--- website visitor starting a chat, is never signed in). This means RLS does
--- NOT provide read isolation for those three tables — the app's own
--- queries must filter by organization_id for their authenticated
--- list views (see entities/{form,chat}'s Supabase repositories). For every
--- other table (leads, form_submissions, lead_activity, team_members,
--- organization_members, organization_invites), RLS *does* fully isolate
--- reads, so a bug in the app's query filtering can't leak another
--- organization's rows.
+-- functions defined right below. Since migrations-public-read-hardening.sql
+-- (H2) EVERY table isolates reads this way — including `organizations`,
+-- `forms` and `chat_configuration`, which used to keep a public SELECT for
+-- the no-login `/f/:formId` and `/c/:orgSlug` pages. Those pages now read
+-- only the fields they need through two SECURITY DEFINER functions,
+-- get_public_form() (active forms, scoring removed) and
+-- get_public_chat_config() (assistant name, welcome message, tone,
+-- language, is_active), so a bug in the app's query filtering can't leak
+-- another organization's rows.
 --
 -- created_by columns below are deliberately a plain `uuid`, NOT
 -- `references auth.users(id)`. Referencing the auth schema from a SQL-editor
@@ -158,12 +155,15 @@ grant execute on function is_org_editor(uuid) to authenticated;
 
 alter table organizations enable row level security;
 drop policy if exists "organizations_select_public" on organizations;
+drop policy if exists "organizations_select_members" on organizations;
 drop policy if exists "organizations_insert_self" on organizations;
 drop policy if exists "organizations_update_members" on organizations;
--- Public on purpose: /c/:orgSlug must resolve an org's id from its slug for
--- an anonymous chat visitor. Only name/slug/id are exposed today — revisit
--- if a sensitive column (billing info, etc.) is ever added to this table.
-create policy "organizations_select_public" on organizations for select using (true);
+-- Members only (plus the creator, so createOrganization() can read back the
+-- row it just inserted before adding itself as owner). Anonymous pages never
+-- read this table: /c/:orgSlug resolves its organization through
+-- get_public_chat_config() — see migrations-public-read-hardening.sql (H2).
+create policy "organizations_select_members" on organizations for select
+  using (is_org_member(id) or created_by = auth.uid());
 -- Self-serve bootstrap: any signed-in user can create ONE organization row
 -- for themselves (the app auto-provisions one on first login — see
 -- entities/organization/OrganizationProvider.tsx). Ownership is granted
@@ -643,9 +643,9 @@ drop policy if exists "forms_select" on forms;
 drop policy if exists "forms_insert" on forms;
 drop policy if exists "forms_update" on forms;
 drop policy if exists "forms_delete" on forms;
--- Public on purpose: /f/:formId is a no-login public submission page —
--- see the multi-tenancy note at the top of this file.
-create policy "forms_select" on forms for select using (true);
+-- Members only. The public /f/:formId page reads through get_public_form()
+-- (active forms only, scoring removed) — see migrations-public-read-hardening.sql.
+create policy "forms_select" on forms for select using (is_org_member(organization_id));
 -- INSERT/UPDATE: owner/admin/member (is_org_editor) — a viewer can view an
 -- organization's forms but not create, edit, duplicate, or activate/
 -- deactivate one. Questions live on this same row's `questions` jsonb
@@ -773,6 +773,9 @@ create policy "leads_delete" on leads for delete using (is_org_admin(organizatio
 -- read-after-write step for a request the caller was already authorized to
 -- make. It does NOT expose a general-purpose leads SELECT — anon still has
 -- no way to list or fetch an arbitrary lead.
+-- H1 (migrations-chat-lead-isolation.sql): the chat session must exist and
+-- belong to p_organization_id, and ON CONFLICT never updates a lead of
+-- another organization — this function bypasses RLS, so it must check both.
 create or replace function public.upsert_chat_lead(
   p_organization_id uuid,
   p_chat_session_id text,
@@ -792,6 +795,8 @@ as $$
 declare
   v_lead leads;
   v_is_new boolean;
+  v_session_id uuid;
+  v_session_org uuid;
 begin
   if p_organization_id is null then
     raise exception 'p_organization_id is required';
@@ -800,8 +805,20 @@ begin
     raise exception 'p_chat_session_id is required';
   end if;
 
+  -- 1. The chat session must exist and belong to this exact organization.
+  begin
+    v_session_id := p_chat_session_id::uuid;
+  exception when invalid_text_representation then
+    raise exception 'CHAT_SESSION_NOT_FOUND' using errcode = '42501';
+  end;
+  select cs.organization_id into v_session_org from chat_sessions cs where cs.id = v_session_id;
+  if v_session_org is null or v_session_org <> p_organization_id then
+    raise exception 'CHAT_SESSION_NOT_FOUND' using errcode = '42501';
+  end if;
+
   select not exists (select 1 from leads where chat_session_id = p_chat_session_id) into v_is_new;
 
+  -- 2. ON CONFLICT never touches a lead of another organization.
   insert into leads (
     organization_id, name, email, phone, company, source, status, score, notes, chat_session_id, last_activity_at
   )
@@ -817,7 +834,12 @@ begin
     score = excluded.score,
     notes = excluded.notes,
     last_activity_at = now()
+  where leads.organization_id = excluded.organization_id
   returning * into v_lead;
+
+  if v_lead.id is null then
+    raise exception 'CHAT_SESSION_NOT_FOUND' using errcode = '42501';
+  end if;
 
   insert into lead_activity (organization_id, lead_id, message)
   values (
@@ -940,14 +962,12 @@ drop policy if exists "chat_configuration_select" on chat_configuration;
 drop policy if exists "chat_configuration_insert" on chat_configuration;
 drop policy if exists "chat_configuration_update" on chat_configuration;
 drop policy if exists "chat_configuration_delete" on chat_configuration;
--- Public on purpose: /c/:orgSlug is a no-login public chat page — see the
--- multi-tenancy note at the top of this file. SELECT is intentionally left
--- as-is (public) — do not gate it by role/membership, it would break the
--- public chat page's config lookup.
-create policy "chat_configuration_select" on chat_configuration for select using (true);
+-- Members only. The public /c/:orgSlug page reads ONLY the public fields
+-- through get_public_chat_config() — business description, criteria and
+-- additional instructions stay private (migrations-public-read-hardening.sql).
+create policy "chat_configuration_select" on chat_configuration for select using (is_org_member(organization_id));
 -- INSERT/UPDATE: owner/admin/member (is_org_editor) — a viewer can read the
--- chat assistant's configuration (via the public SELECT above, same as
--- everyone) but not save changes to it, in /chat-settings or via a direct
+-- chat assistant's configuration (members-only SELECT above) but not save changes to it, in /chat-settings or via a direct
 -- API call. WITH CHECK mirrors USING on the update policy for the same
 -- organization_id-reassignment reason as forms_update/leads_update.
 create policy "chat_configuration_insert" on chat_configuration for insert with check (is_org_editor(organization_id));
@@ -958,6 +978,79 @@ create policy "chat_configuration_update" on chat_configuration for update
 -- no UI exposes this today (ChatConfigRepository has no delete method), but
 -- RLS shouldn't rely on that.
 create policy "chat_configuration_delete" on chat_configuration for delete using (is_org_admin(organization_id));
+
+-- ── RPC: get_public_form / get_public_chat_config (H2) ───────────────────
+-- The ONLY anonymous read path for forms and chat configuration — see
+-- migrations-public-read-hardening.sql for the full reasoning.
+create or replace function public.get_public_form(p_form_id uuid)
+returns table (
+  id uuid,
+  organization_id uuid,
+  name text,
+  description text,
+  status text,
+  questions jsonb,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select
+    f.id,
+    f.organization_id,
+    f.name,
+    f.description,
+    f.status,
+    -- Scoring stays private: drop `points` from every question and option.
+    coalesce((
+      select jsonb_agg(
+        case
+          when jsonb_typeof(q.value -> 'options') = 'array' then
+            (q.value - 'points') || jsonb_build_object('options', coalesce((
+              select jsonb_agg(o.value - 'points' order by o.ordinality)
+              from jsonb_array_elements(q.value -> 'options') with ordinality as o(value, ordinality)
+            ), '[]'::jsonb))
+          else q.value - 'points'
+        end
+        order by q.ordinality
+      )
+      from jsonb_array_elements(f.questions) with ordinality as q(value, ordinality)
+    ), '[]'::jsonb),
+    f.created_at,
+    f.updated_at
+  from forms f
+  where f.id = p_form_id
+    and f.status = 'active'
+$$;
+
+revoke all on function public.get_public_form(uuid) from public;
+grant execute on function public.get_public_form(uuid) to anon, authenticated;
+
+create or replace function public.get_public_chat_config(p_slug text)
+returns table (
+  organization_id uuid,
+  assistant_name text,
+  welcome_message text,
+  tone text,
+  language text,
+  is_active boolean
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select o.id, cc.assistant_name, cc.welcome_message, cc.tone, cc.language, cc.is_active
+  from organizations o
+  join chat_configuration cc on cc.organization_id = o.id
+  where o.slug = p_slug
+$$;
+
+revoke all on function public.get_public_chat_config(text) from public;
+grant execute on function public.get_public_chat_config(text) to anon, authenticated;
 
 -- ── chat_sessions / chat_messages ────────────────────────────────────────
 -- The "display copy" of a public chat conversation (/c/:orgSlug), moved out
@@ -975,8 +1068,7 @@ create policy "chat_configuration_delete" on chat_configuration for delete using
 -- through one of the four SECURITY DEFINER functions below, each with its
 -- own explicit, narrow validation (see each function's comment). This is a
 -- deliberately stricter pattern than the rest of the file: a chat transcript
--- is PII, so RLS never grants a public SELECT here either (contrast with
--- forms/chat_configuration's public read for their own no-login pages).
+-- is PII, so RLS never grants a public SELECT here either.
 --
 -- chat_sessions.id deliberately has NO default — it's always the same UUID
 -- the Express backend already minted in createSession() (see
@@ -1620,6 +1712,7 @@ create index if not exists usage_events_session_id_idx
   on usage_events (session_id);
 
 alter table usage_events enable row level security;
+drop policy if exists "usage_events_select" on usage_events;
 create policy "usage_events_select" on usage_events for select
   using (is_org_member(organization_id));
 -- Deliberately no insert/update/delete policy for anon/authenticated —

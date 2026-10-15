@@ -26,7 +26,9 @@ export interface ChatConfigRepository {
    * /c/:orgSlug page — a chat visitor was never a member of any
    * organization. Returns the resolved organizationId alongside the config
    * since the caller (PublicChatPage) needs it to create the chat session
-   * and, later, any lead the conversation qualifies.
+   * and, later, any lead the conversation qualifies. On Supabase only the
+   * PUBLIC fields are returned (get_public_chat_config RPC — see
+   * public-chat-config.ts); the private ones come back neutral.
    */
   getBySlug(slug: string): Promise<{ config: ChatConfiguration; organizationId: string } | undefined>
 }

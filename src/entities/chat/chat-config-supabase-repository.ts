@@ -1,6 +1,8 @@
 import { supabase } from '@/shared/lib/supabase-client'
 import type { ChatConfigRepository } from './chat-config-repository'
 import { createDefaultChatConfiguration } from './defaults'
+import { publicChatConfigFromRow } from './public-chat-config'
+import type { PublicChatConfigRow } from './public-chat-config'
 import type { ChatConfiguration } from './types'
 
 interface ChatConfigurationRow {
@@ -137,22 +139,13 @@ export const supabaseChatConfigRepository: ChatConfigRepository = {
   },
 
   async getBySlug(slug) {
-    const { data: org, error: orgError } = await supabase
-      .from('organizations')
-      .select('id')
-      .eq('slug', slug)
-      .maybeSingle()
-    if (orgError) throw orgError
-    if (!org) return undefined
-
-    const { data, error } = await supabase
-      .from('chat_configuration')
-      .select('*')
-      .eq('organization_id', org.id)
-      .maybeSingle()
+    // One public RPC (get_public_chat_config) instead of reading
+    // organizations + chat_configuration directly: both tables are
+    // members-only since supabase/migrations-public-read-hardening.sql, and
+    // the RPC returns only the fields a visitor may see.
+    const { data, error } = await supabase.rpc('get_public_chat_config', { p_slug: slug }).maybeSingle()
     if (error) throw error
     if (!data) return undefined
-
-    return { config: fromRow(data), organizationId: org.id }
+    return publicChatConfigFromRow(data as PublicChatConfigRow)
   },
 }

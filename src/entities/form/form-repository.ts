@@ -13,10 +13,12 @@ export interface FormRepository {
   /**
    * Org-agnostic direct lookup by id, for the public (no-login) /f/:formId
    * page — a visitor filling out a form was never a member of any
-   * organization, so there's no organizationId to filter by yet. Relies on
-   * `forms`' SELECT policy staying public in Supabase (see schema.sql's
-   * multi-tenancy note); the returned row's organizationId is what
-   * submission-service.ts then uses to create the resulting Lead. Every
+   * organization, so there's no organizationId to filter by yet. On
+   * Supabase it goes through the get_public_form() RPC, which only returns
+   * ACTIVE forms and strips their scoring (`forms` itself is members-only —
+   * see supabase/migrations-public-read-hardening.sql); a draft or unknown
+   * id resolves to undefined. The returned organizationId is what
+   * submission-service.ts then uses in local mode. Every
    * other method on this interface IS organization-scoped — this is the
    * one deliberate exception.
    */

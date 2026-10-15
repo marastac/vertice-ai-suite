@@ -54,11 +54,51 @@ if (problems.length === 0) {
     sleep(6000)
     check('Contenedor de restauración (sin red)', ready)
 
-    // auth.users first (organization_members/team_members reference it). Its
-    // columns depend on the GoTrue version: a mismatch is reported, not fatal.
+    // auth.users first: organization_members references it, so without these
+    // rows the public restore fails its foreign keys.
+    //
+    // The plain Postgres image ships auth.users in its INITIAL GoTrue shape;
+    // a real Supabase project has the current one (more columns, e.g.
+    // email_confirmed_at, phone, is_anonymous). The dump is data-only, so its
+    // COPY header is the source of truth: every column it carries that this
+    // TEST container lacks is added as text (only here — the backup and any
+    // real project are never touched). Restoring into a real Supabase project
+    // needs none of this: its auth.users already has the current shape.
+    const header = docker([
+      'exec',
+      container,
+      'bash',
+      '-c',
+      "pg_restore -f - /backup/auth-users.dump | grep -m1 '^COPY auth.users ' | sed -E 's/^COPY auth\\.users \\((.*)\\) FROM stdin;$/\\1/'",
+    ])
+    const dumpColumns = header.status === 0 ? header.stdout.trim().split(',').map((c) => c.trim().replace(/^"|"$/g, '')).filter(Boolean) : []
+    const imageColumns = new Set(
+      psql("select column_name from information_schema.columns where table_schema = 'auth' and table_name = 'users'").stdout.trim().split('\n'),
+    )
+    const missing = dumpColumns.filter((c) => !imageColumns.has(c))
+    const unsafe = missing.filter((c) => !/^[a-z_][a-z0-9_]{0,62}$/.test(c))
+    let adapted = unsafe.length === 0 && dumpColumns.length > 0
+    if (adapted && missing.length > 0) {
+      const ddl = missing.map((c) => `alter table auth.users add column if not exists ${c} text;`).join('\n')
+      adapted = docker(['exec', '-i', container, 'psql', '-U', 'supabase_admin', '-d', 'postgres', '-X', '-q', '-v', 'ON_ERROR_STOP=1'], ddl).status === 0
+    }
+    check(
+      'Contenedor de prueba adaptado a la versión de auth del volcado',
+      adapted,
+      dumpColumns.length === 0 ? 'no se pudo leer la cabecera de auth.users' : unsafe.length ? `nombres de columna no válidos: ${unsafe.join(', ')}` : `${missing.length} columna(s) añadida(s) solo en el contenedor`,
+    )
+
     // auth tables belong to supabase_admin in the Supabase image.
     const auth = docker(['exec', container, 'pg_restore', '-U', 'supabase_admin', '-d', 'postgres', '--data-only', '--disable-triggers', '/backup/auth-users.dump'])
-    check('auth.users restaurado (referencia)', auth.status === 0, auth.status === 0 ? '' : 'versión de auth distinta: ' + auth.stderr.split('\n').find((l) => l.includes('ERROR')))
+    const dumpedUsers = Number(
+      docker(['exec', container, 'bash', '-c', "pg_restore -f - /backup/auth-users.dump | awk '/^COPY auth.users /{f=1;next} /^\\\\\\.$/{f=0} f' | wc -l"]).stdout.trim(),
+    )
+    const restoredUsers = Number(psql('select count(*) from auth.users').stdout.trim())
+    check(
+      'auth.users restaurado: mismas filas que el volcado',
+      auth.status === 0 && restoredUsers === dumpedUsers,
+      auth.status === 0 ? `${restoredUsers}/${dumpedUsers} filas` : (auth.stderr.split('\n').find((l) => l.includes('ERROR')) ?? 'error'),
+    )
 
     // The dump includes CREATE SCHEMA public, which already exists in any
     // Postgres: that one TOC entry is filtered out (inside the container,
@@ -95,6 +135,6 @@ console.log(`\n══════════ verificación de copia — ${path.
 for (const r of results) console.log(`${r.ok ? '✔' : '✖'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
 console.log('\nNo cubierto por esta copia:')
 for (const item of manifest.notCovered ?? []) console.log(`  - ${item}`)
-const failed = results.filter((r) => !r.ok && !r.name.startsWith('auth.users')).length
+const failed = results.filter((r) => !r.ok).length
 console.log(`\nRESULTADO: ${failed === 0 ? 'COPIA VERIFICADA' : `${failed} comprobación(es) fallida(s)`}`)
 process.exit(failed === 0 ? 0 : 1)

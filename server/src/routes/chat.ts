@@ -15,14 +15,13 @@ const REQUEST_TIMEOUT_MS = 45_000
 // can't exhaust the Anthropic quota for everyone else.
 const rateLimit = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 40 })
 
-// TECHNICAL protection added with monthly quotas, active only while
-// CHAT_QUOTAS_ENABLED is on (unchanged behavior while off): with quotas on,
-// every new session costs a quota-status read, so mass session creation from
-// one IP is capped on its own, on top of the shared limiter above. A real
-// visitor opens one session per page load. Empty sessions never consume
-// budget either way — conversations are counted on their first accepted message.
+// TECHNICAL protection: mass session creation from one IP is capped on its
+// own, on top of the shared limiter above. Every session is stored (and, with
+// quotas on, costs a quota-status read). A real visitor opens one session per
+// page load. Active with quotas on OR the abuse guards on (CHAT_ABUSE_GUARDS,
+// on by default — see config.ts).
 const sessionCreationLimit = onlyWhen(
-  () => config.chatQuotasEnabled,
+  () => config.chatQuotasEnabled || config.chatAbuseGuardsEnabled,
   createRateLimiter({
     windowMs: 10 * 60 * 1000,
     max: 10,
@@ -62,7 +61,21 @@ chatRouter.post('/sessions', rateLimit, sessionCreationLimit, async (req, res, n
   }
 })
 
-chatRouter.post('/sessions/:sessionId/messages', rateLimit, async (req, res, next) => {
+// Optional global circuit breaker (CHAT_GLOBAL_MAX_MESSAGES_PER_MINUTE, off by
+// default): caps chat messages per minute across ALL visitors, so a
+// distributed burst can't run up Anthropic spend faster than this. Refused
+// requests never reach Anthropic; the frontend shows its retryable banner.
+const globalMessageLimit =
+  config.chatGlobalMaxMessagesPerMinute > 0
+    ? createRateLimiter({
+        windowMs: 60 * 1000,
+        max: config.chatGlobalMaxMessagesPerMinute,
+        key: () => 'global',
+        message: 'El asistente está recibiendo muchas consultas en este momento. Inténtalo de nuevo en un minuto.',
+      })
+    : onlyWhen(() => false, (_req, _res, next) => next())
+
+chatRouter.post('/sessions/:sessionId/messages', rateLimit, globalMessageLimit, async (req, res, next) => {
   const { sessionId } = req.params
   let releaseTurn: (() => void) | null = null
 

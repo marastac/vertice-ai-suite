@@ -94,6 +94,8 @@ const settled: QuotaRpcResult<SettleResult> = ok({ reservationId: randomUUID(), 
 
 interface LoadOptions {
   flag?: string
+  /** CHAT_ABUSE_GUARDS value; undefined = unset (guards on by default). */
+  abuseGuards?: string
   reserve?: ReturnType<typeof vi.fn>
   settle?: ReturnType<typeof vi.fn>
   getStatus?: ReturnType<typeof vi.fn>
@@ -108,6 +110,8 @@ async function load(options: LoadOptions = {}) {
   vi.resetModules()
   if (options.flag === undefined) delete process.env[FLAG]
   else process.env[FLAG] = options.flag
+  if (options.abuseGuards === undefined) delete process.env.CHAT_ABUSE_GUARDS
+  else process.env.CHAT_ABUSE_GUARDS = options.abuseGuards
 
   const sessionRepository = {
     create: vi.fn(() => options.createdSession ?? buildSession()),
@@ -870,8 +874,20 @@ describe('simultaneous requests', () => {
     expect(loaded.chatService.tryBeginSessionTurn(sessionId)).not.toBeNull()
   })
 
-  it('with the flag off, the per-session guard never refuses (unchanged behavior)', async () => {
+  it('quotas off but abuse guards on (the default): the same session still cannot process two messages at once', async () => {
     const loaded = await load({ flag: 'false' })
+    const sessionId = randomUUID()
+
+    const release = loaded.chatService.tryBeginSessionTurn(sessionId)
+    expect(release).not.toBeNull()
+    expect(loaded.chatService.tryBeginSessionTurn(sessionId)).toBeNull()
+    expect(loaded.chatService.tryBeginSessionTurn(randomUUID())).not.toBeNull()
+    release!()
+    expect(loaded.chatService.tryBeginSessionTurn(sessionId)).not.toBeNull()
+  })
+
+  it('with quotas off AND CHAT_ABUSE_GUARDS=off (emergency switch), the per-session guard never refuses', async () => {
+    const loaded = await load({ flag: 'false', abuseGuards: 'off' })
     const sessionId = randomUUID()
 
     expect(loaded.chatService.tryBeginSessionTurn(sessionId)).not.toBeNull()

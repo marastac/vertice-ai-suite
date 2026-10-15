@@ -10,7 +10,13 @@ interface Bucket {
  * Good enough for a single-process local MVP — swap for a shared store
  * (Redis, etc.) before running more than one server instance.
  */
-export function createRateLimiter(options: { windowMs: number; max: number; message?: string }) {
+export function createRateLimiter(options: {
+  windowMs: number
+  max: number
+  message?: string
+  /** Bucket key; defaults to the client IP. A constant key turns this into a global limiter. */
+  key?: (req: Request) => string
+}) {
   const buckets = new Map<string, Bucket>()
   let nextSweepAt = 0
 
@@ -27,7 +33,7 @@ export function createRateLimiter(options: { windowMs: number; max: number; mess
   }
 
   function rateLimit(req: Request, res: Response, next: NextFunction) {
-    const key = req.ip ?? 'unknown'
+    const key = options.key ? options.key(req) : (req.ip ?? 'unknown')
     const now = Date.now()
     sweepExpired(now)
     const bucket = buckets.get(key)

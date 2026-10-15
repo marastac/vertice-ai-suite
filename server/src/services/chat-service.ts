@@ -519,8 +519,9 @@ const sessionsInFlight = new Set<string>()
  * Prevents two messages of the SAME conversation from being processed at
  * the same time (double click, a client re-sending while the first request
  * is still streaming). Each would otherwise reserve and spend separately.
- * Only active while CHAT_QUOTAS_ENABLED is on — with the flag off this
- * always succeeds, so existing behavior is untouched. The official frontend
+ * Active while CHAT_QUOTAS_ENABLED is on OR the public-chat abuse guards are
+ * on (CHAT_ABUSE_GUARDS, on by default — parallel messages on one
+ * conversation multiply Anthropic calls even without quotas). The official frontend
  * never sends concurrently (its composer is disabled while streaming), so
  * only duplicate/abusive requests are refused.
  *
@@ -529,7 +530,7 @@ const sessionsInFlight = new Set<string>()
  * single Railway instance), not several.
  */
 export function tryBeginSessionTurn(sessionId: string): (() => void) | null {
-  if (!config.chatQuotasEnabled) return () => {}
+  if (!config.chatQuotasEnabled && !config.chatAbuseGuardsEnabled) return () => {}
   if (sessionsInFlight.has(sessionId)) return null
   sessionsInFlight.add(sessionId)
   let released = false

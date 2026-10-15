@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ChatConfigurationInput, ChatQualificationResult } from '../schemas/chat.js'
 import type { ChatTurn } from '../services/ai-provider.js'
@@ -109,33 +109,111 @@ export interface SessionRepository {
   setConfig(id: string, config: ChatConfigurationInput, configSource: ChatConfigSource): void
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data')
-const DATA_FILE = path.join(DATA_DIR, 'sessions.json')
+const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data')
+const SESSIONS_FILE_NAME = 'sessions.json'
 
-function readSessionsFromDisk(): Map<string, StoredSession> {
-  if (!existsSync(DATA_FILE)) return new Map()
+/**
+ * Reads sessions.json. A file that exists but can't be parsed (e.g. truncated
+ * by a crash in the middle of a write made before writes became atomic) is
+ * NEVER overwritten: it's renamed aside to `sessions.corrupt-<timestamp>.json`
+ * first, so its conversations can still be recovered by hand. Before this,
+ * the next write silently replaced it with an empty store.
+ */
+function readSessionsFromDisk(dataFile: string): Map<string, StoredSession> {
+  if (!existsSync(dataFile)) return new Map()
 
   try {
-    const raw = readFileSync(DATA_FILE, 'utf8')
+    const raw = readFileSync(dataFile, 'utf8')
     const entries = JSON.parse(raw) as [string, StoredSession][]
     return new Map(entries)
   } catch (error) {
-    logger.warn('Could not read sessions.json, starting with an empty session store', {
+    const preserved = path.join(path.dirname(dataFile), `sessions.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+    try {
+      renameSync(dataFile, preserved)
+    } catch {
+      // If even the rename fails, keep going: the atomic writes below never
+      // truncate the original in place either.
+    }
+    logger.warn('Could not read sessions.json — preserved it aside and started with an empty session store', {
       message: error instanceof Error ? error.message : String(error),
+      preservedAs: path.basename(preserved),
     })
     return new Map()
   }
 }
 
-class FileSessionRepository implements SessionRepository {
-  private sessions = readSessionsFromDisk()
+export interface FileSessionRepositoryOptions {
+  /** Directory holding sessions.json. Defaults to <cwd>/data. Injectable for tests. */
+  dataDir?: string
+}
 
-  private persist(): void {
-    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
-    // Writes are infrequent (once per chat turn) and this is a single-process
-    // local backend, so a synchronous write is simpler and safer than
-    // building a write queue for now.
-    writeFileSync(DATA_FILE, JSON.stringify([...this.sessions.entries()]))
+/** Called after every change to a session (see setChangeListener()). Never allowed to break the chat. */
+export type SessionChangeListener = (session: StoredSession) => void
+
+export class FileSessionRepository implements SessionRepository {
+  private readonly dataDir: string
+  private readonly dataFile: string
+  private readonly sessions: Map<string, StoredSession>
+  private changeListener: SessionChangeListener | null = null
+
+  constructor(options: FileSessionRepositoryOptions = {}) {
+    this.dataDir = options.dataDir ?? DEFAULT_DATA_DIR
+    this.dataFile = path.join(this.dataDir, SESSIONS_FILE_NAME)
+    this.sessions = readSessionsFromDisk(this.dataFile)
+  }
+
+  /**
+   * Opt-in hook for a durable copy elsewhere (services/durable-session-sync.ts,
+   * CHAT_SESSION_STORE=postgres). Not set by default — then nothing changes.
+   */
+  setChangeListener(listener: SessionChangeListener | null): void {
+    this.changeListener = listener
+  }
+
+  /**
+   * Adds sessions recovered from a durable copy (e.g. after a redeploy that
+   * wiped sessions.json). A session already present locally is only replaced
+   * if the recovered copy is strictly newer. Returns how many were applied.
+   * Does NOT notify the change listener (they came from that store).
+   */
+  restore(recovered: StoredSession[]): number {
+    let applied = 0
+    for (const session of recovered) {
+      const current = this.sessions.get(session.id)
+      if (current && current.updatedAt >= session.updatedAt) continue
+      this.sessions.set(session.id, session)
+      applied += 1
+    }
+    if (applied > 0) this.writeFile()
+    return applied
+  }
+
+  /** All sessions currently held (read-only use: diagnostics and tests). */
+  list(): StoredSession[] {
+    return [...this.sessions.values()]
+  }
+
+  private writeFile(): void {
+    if (!existsSync(this.dataDir)) mkdirSync(this.dataDir, { recursive: true })
+    // Atomic: write a sibling temp file, then rename it over sessions.json. A
+    // crash mid-write leaves the previous complete file in place instead of a
+    // truncated one. Synchronous on purpose: single process, one write per turn.
+    const tempFile = `${this.dataFile}.${process.pid}.tmp`
+    writeFileSync(tempFile, JSON.stringify([...this.sessions.entries()]))
+    renameSync(tempFile, this.dataFile)
+  }
+
+  private persist(session?: StoredSession): void {
+    this.writeFile()
+    if (session && this.changeListener) {
+      try {
+        this.changeListener(session)
+      } catch (error) {
+        logger.warn('Session change listener failed — the conversation is unaffected', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
   }
 
   create(
@@ -156,7 +234,7 @@ class FileSessionRepository implements SessionRepository {
       history: [],
     }
     this.sessions.set(session.id, session)
-    this.persist()
+    this.persist(session)
     return session
   }
 
@@ -169,7 +247,7 @@ class FileSessionRepository implements SessionRepository {
     if (!session) return
     session.history.push(turn)
     session.updatedAt = new Date().toISOString()
-    this.persist()
+    this.persist(session)
   }
 
   setQualification(id: string, result: ChatQualificationResult): void {
@@ -177,7 +255,7 @@ class FileSessionRepository implements SessionRepository {
     if (!session) return
     session.qualification = result
     session.updatedAt = new Date().toISOString()
-    this.persist()
+    this.persist(session)
   }
 
   setOrganization(id: string, organization: OrganizationResolution): void {
@@ -185,7 +263,7 @@ class FileSessionRepository implements SessionRepository {
     if (!session) return
     session.organization = organization
     session.updatedAt = new Date().toISOString()
-    this.persist()
+    this.persist(session)
   }
 
   setConfig(id: string, config: ChatConfigurationInput, configSource: ChatConfigSource): void {
@@ -197,8 +275,8 @@ class FileSessionRepository implements SessionRepository {
     session.config = config
     session.configSource = configSource
     session.updatedAt = new Date().toISOString()
-    this.persist()
+    this.persist(session)
   }
 }
 
-export const sessionRepository: SessionRepository = new FileSessionRepository()
+export const sessionRepository = new FileSessionRepository()

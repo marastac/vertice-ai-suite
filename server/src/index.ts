@@ -1,11 +1,30 @@
 import { createApp } from './app.js'
 import { config } from './config.js'
 import { logger } from './lib/logger.js'
+import { createSupabaseSessionSnapshotStore } from './repositories/backend-session-store.js'
+import { sessionRepository } from './repositories/session-repository.js'
+import { createDurableSessionSync } from './services/durable-session-sync.js'
+import type { DurableSessionSync } from './services/durable-session-sync.js'
 import { checkQuotaPricingAtStartup } from './services/quota-pricing-check.js'
 import { startQuotaReconciler, stopQuotaReconciler } from './services/quota-reconciler.js'
 import { startWebhookWorker, stopWebhookWorker } from './services/webhook-worker.js'
 
 const app = createApp()
+
+// Opt-in durable copy of chat sessions (CHAT_SESSION_STORE=postgres). With the
+// default ('file') none of this runs and startup is exactly as before.
+let durableSessions: DurableSessionSync | null = null
+if (config.chatSessionStore === 'postgres') {
+  if (config.isWebhooksConfigured) {
+    durableSessions = createDurableSessionSync({ repository: sessionRepository, store: createSupabaseSessionSnapshotStore() })
+    // Recover BEFORE listening, so a visitor's in-progress conversation exists
+    // again by the time its next message arrives. Never throws.
+    await durableSessions.hydrate()
+    durableSessions.start()
+  } else {
+    logger.warn('CHAT_SESSION_STORE=postgres requires SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY — keeping sessions in sessions.json only.')
+  }
+}
 
 const server = app.listen(config.port, () => {
   logger.info(`Lead AI backend listening on http://localhost:${config.port}`, {
@@ -38,7 +57,8 @@ function shutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down.`)
   stopWebhookWorker()
   stopQuotaReconciler()
-  server.close(() => process.exit(0))
+  // Let pending durable session copies finish (bounded by their own timeouts).
+  void (durableSessions ? durableSessions.flush() : Promise.resolve()).finally(() => server.close(() => process.exit(0)))
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'))

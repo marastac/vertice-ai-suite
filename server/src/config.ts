@@ -32,6 +32,22 @@ const chatMaxUserMessagesPerConversation = (() => {
 // exactly as before and does not require that migration to be applied.
 const chatQuotasEnabled = process.env.CHAT_QUOTAS_ENABLED?.trim().toLowerCase() === 'true'
 
+// Abuse protection for the PUBLIC chat, independent of quotas: a per-IP cap
+// on new conversations and "one message in flight per conversation" (see
+// routes/chat.ts and chat-service.ts::tryBeginSessionTurn()). A real visitor
+// opens one conversation per page load and the official frontend never sends
+// two messages at once, so neither ever blocks legitimate use. ON unless set
+// to exactly "off" (case-insensitive) — an emergency switch, not a tuning knob.
+const chatAbuseGuardsEnabled = process.env.CHAT_ABUSE_GUARDS?.trim().toLowerCase() !== 'off'
+
+// Optional GLOBAL circuit breaker on chat messages per minute across every
+// visitor and organization — caps Anthropic spend during a distributed abuse
+// burst that per-IP limits can't see. Off (0) unless set to a positive integer.
+const chatGlobalMaxMessagesPerMinute = (() => {
+  const parsed = Number(process.env.CHAT_GLOBAL_MAX_MESSAGES_PER_MINUTE)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+})()
+
 // Webhooks feature: the backend's own Supabase credentials, used only for
 // webhook_configurations/webhook_deliveries (config CRUD, the delivery
 // worker's claim/write). Nothing else in this backend touches Supabase.
@@ -40,6 +56,14 @@ const chatQuotasEnabled = process.env.CHAT_QUOTAS_ENABLED?.trim().toLowerCase() 
 // deployment must still serve the existing chat/Anthropic routes normally,
 // the same way a missing ANTHROPIC_API_KEY doesn't crash the process either.
 const supabaseUrl = process.env.SUPABASE_URL?.trim() || undefined
+
+// Where chat sessions are kept durably. 'file' (default): only
+// server/data/sessions.json, as always. 'postgres': ALSO mirrored to the
+// backend_chat_sessions table (supabase/migrations-backend-chat-sessions.sql)
+// and recovered from it at startup — see services/durable-session-sync.ts.
+// Requires SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY and that migration; any
+// other value is 'file'.
+const chatSessionStore: 'file' | 'postgres' = process.env.CHAT_SESSION_STORE?.trim().toLowerCase() === 'postgres' ? 'postgres' : 'file'
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || undefined
 
 // HubSpot CRM integration (Fase 1 of several — see the integration audit):
@@ -77,6 +101,9 @@ export const config = {
   isAiConfigured: Boolean(anthropicApiKey),
   chatMaxUserMessagesPerConversation,
   chatQuotasEnabled,
+  chatAbuseGuardsEnabled,
+  chatSessionStore,
+  chatGlobalMaxMessagesPerMinute,
   supabaseUrl,
   supabaseServiceRoleKey,
   isWebhooksConfigured: Boolean(supabaseUrl && supabaseServiceRoleKey),

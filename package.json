@@ -15,6 +15,7 @@
     "lint": "oxlint",
     "test:all:safe": "node scripts/test-all-safe.mjs",
     "test:staging:smoke": "node scripts/staging-smoke.mjs",
+    "test:db:concurrency": "node scripts/test-db-concurrency.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

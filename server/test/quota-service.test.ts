@@ -389,6 +389,41 @@ describe('reserveForMessage — database failures', () => {
     expect(await service.reserveForMessage(reserveInput())).toMatchObject({ proceed: false, reason: 'verification_failed' })
   })
 
+  it('a PERSISTENT transient failure is retried exactly once (bounded), then fails closed', async () => {
+    const repository = stubRepository(async () => ({ ok: false, kind: 'transient', message: 'still down' }))
+    const service = createQuotaService({ repository, logger: silentLogger() })
+
+    const decision = await service.reserveForMessage(reserveInput())
+
+    expect(repository.reserve).toHaveBeenCalledTimes(2)
+    expect(decision).toEqual({ proceed: false, reason: 'verification_failed', publicMessage: QUOTA_TEMPORARY_ERROR_MESSAGE })
+  })
+
+  it('a denial WITHOUT a reason never proceeds (fails closed as unverified)', async () => {
+    const repository = stubRepository(async () => ok({ allowed: false, mode: 'enforce', reservationId: null, reason: null, replayed: false }))
+    const service = createQuotaService({ repository, logger: silentLogger() })
+
+    const decision = await service.reserveForMessage(reserveInput())
+
+    expect(decision).toEqual({ proceed: false, reason: 'verification_failed', publicMessage: QUOTA_TEMPORARY_ERROR_MESSAGE })
+  })
+
+  it('concurrent messages are decided independently: one failing never affects another', async () => {
+    const reservationId = randomUUID()
+    const repository = stubRepository(async (input) =>
+      input.sessionId === SESSION ? { ok: false, kind: 'transient', message: 'down' } : ok(allowed('enforce', reservationId)),
+    )
+    const service = createQuotaService({ repository, logger: silentLogger() })
+
+    const [failing, healthy] = await Promise.all([
+      service.reserveForMessage(reserveInput()),
+      service.reserveForMessage({ ...reserveInput(), sessionId: randomUUID() }),
+    ])
+
+    expect(failing).toMatchObject({ proceed: false, reason: 'verification_failed' })
+    expect(healthy).toEqual({ proceed: true, mode: 'enforce', reservationId })
+  })
+
   it('surfaces an unexpected repository exception instead of treating it as allowed', async () => {
     // The repository contract is "never throws". If that contract is ever
     // broken, the error must surface (the chat's existing catch turns it

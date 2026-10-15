@@ -232,32 +232,58 @@ if (wantSession || wantPaid) {
 }
 
 // ── Optional tier: RLS with the PUBLIC anon key (read-only) ─────────────────
+// STRICTLY READ-ONLY: every request in this tier goes through `restGet`, which
+// only ever issues GET and refuses any other method. No RPC is called here:
+// PostgREST only accepts POST for volatile functions, and even a call that RLS
+// is expected to reject is still a call to a function that writes data.
+// tests/staging-smoke.test.ts fails if this tier ever sends a non-GET request.
 if (wantRls) {
-  const rest = (path, init = {}) =>
-    http(`${supabaseOrigin}/rest/v1/${path}`, {
-      ...init,
-      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+  const restGet = (path, init = {}) => {
+    if (init.method && init.method.toUpperCase() !== 'GET') {
+      throw new Error(`el nivel RLS es solo lectura: método ${init.method} no permitido`)
+    }
+    return http(`${supabaseOrigin}/rest/v1/${path}`, {
+      method: 'GET',
+      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
     })
+  }
 
-  for (const table of ['usage_reservations', 'usage_periods', 'organization_quotas', 'model_prices', 'plans']) {
+  // Quota tables: REVOKE ALL from anon/authenticated → the request itself is denied.
+  for (const table of ['usage_reservations', 'usage_periods', 'usage_conversations', 'organization_quotas', 'model_prices', 'plans']) {
     await check('rls', `anon NO puede leer ${table}`, async () => {
-      const response = await rest(`${table}?select=*&limit=1`)
+      const response = await restGet(`${table}?select=*&limit=1`)
       assert(response.status >= 400, `HTTP ${response.status}: la tabla es legible con la clave anon`)
       return `HTTP ${response.status}`
     })
   }
 
-  await check('rls', 'anon NO ve leads de ninguna organización', async () => {
-    const response = await rest('leads?select=id&limit=1')
-    const body = await json(response)
-    assert(response.status >= 400 || (Array.isArray(body) && body.length === 0), `anon recibió ${Array.isArray(body) ? body.length : '?'} fila(s)`)
-  })
+  // Member-only tables: anon passes the grant but RLS filters every row → [] (or a 4xx).
+  for (const table of ['leads', 'lead_activity', 'form_submissions', 'chat_sessions', 'chat_messages', 'team_members', 'organization_members', 'organization_invites']) {
+    await check('rls', `anon NO ve filas de ${table}`, async () => {
+      const response = await restGet(`${table}?select=id&limit=1`)
+      const body = await json(response)
+      assert(
+        response.status >= 400 || (Array.isArray(body) && body.length === 0),
+        `anon recibió ${Array.isArray(body) ? body.length : '?'} fila(s) (HTTP ${response.status})`,
+      )
+      return response.status >= 400 ? `HTTP ${response.status}` : '0 filas'
+    })
+  }
 
-  await check('rls', 'anon NO puede ejecutar bootstrap_personal_organization', async () => {
-    const response = await rest('rpc/bootstrap_personal_organization', { method: 'POST', body: '{}' })
-    assert(response.status >= 400, `HTTP ${response.status}`)
-    return `HTTP ${response.status}`
-  })
+  // H2 (supabase/migrations-public-read-hardening.sql): these three used to be
+  // readable by anyone. FAILS until that migration is applied — on purpose:
+  // it is how the migration is verified on staging.
+  for (const table of ['organizations', 'forms', 'chat_configuration']) {
+    await check('rls', `anon NO ve filas de ${table} (H2)`, async () => {
+      const response = await restGet(`${table}?select=id&limit=1`)
+      const body = await json(response)
+      assert(
+        response.status >= 400 || (Array.isArray(body) && body.length === 0),
+        `anon recibió ${Array.isArray(body) ? body.length : '?'} fila(s): ¿falta aplicar migrations-public-read-hardening.sql?`,
+      )
+      return response.status >= 400 ? `HTTP ${response.status}` : '0 filas'
+    })
+  }
 } else {
   skip('rls', 'RLS con clave anon', 'STAGING_SMOKE_RLS≠1')
 }

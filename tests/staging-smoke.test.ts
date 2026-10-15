@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { after, before, beforeEach, test } from 'node:test'
 
@@ -26,6 +27,7 @@ const behavior = {
   corsAllowsFrontend: true,
   bundleExtra: '',
   quotaTablesReadable: false,
+  memberTableLeaks: false,
 }
 let requests: Recorded[] = []
 let apiOrigin = ''
@@ -96,8 +98,10 @@ before(async () => {
   })
   supabaseOrigin = await start('supabase', (req, res) => {
     const url = req.url ?? ''
-    if (url.startsWith('/rest/v1/leads')) return send(res, 200, [])
-    if (url.startsWith('/rest/v1/rpc/')) return send(res, 401, { code: '42501', message: 'permission denied' })
+    // Member-only tables: RLS filters every row for anon → 200 [].
+    if (/^\/rest\/v1\/(leads|lead_activity|form_submissions|chat_sessions|chat_messages|team_members|organization_members|organization_invites|organizations|forms|chat_configuration)\?/.test(url)) {
+      return send(res, 200, behavior.memberTableLeaks && url.startsWith('/rest/v1/chat_messages') ? [{ id: 'leak' }] : [])
+    }
     if (behavior.quotaTablesReadable && url.startsWith('/rest/v1/usage_reservations')) return send(res, 200, [{ id: 'x' }])
     send(res, 401, { code: '42501', message: 'permission denied' })
   })
@@ -109,7 +113,7 @@ after(() => {
 
 beforeEach(() => {
   requests = []
-  Object.assign(behavior, { aiConfigured: true, corsAllowsFrontend: true, bundleExtra: '', quotaTablesReadable: false })
+  Object.assign(behavior, { aiConfigured: true, corsAllowsFrontend: true, bundleExtra: '', quotaTablesReadable: false, memberTableLeaks: false })
 })
 
 const ANON_KEY = 'sb_publishable_TESTKEY_never_printed_123'
@@ -246,5 +250,39 @@ test('RLS tier: passes when anon is denied, fails if a quota table is readable �
   const leaky = await runSmoke(env)
   assert.equal(leaky.code, 1)
   assert.match(leaky.output, /usage_reservations — HTTP 200: la tabla es legible/)
-  assert.ok(requests.filter((r) => r.server === 'supabase').every((r) => r.method === 'GET' || r.url.startsWith('/rest/v1/rpc/')))
+})
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+test('RLS tier is strictly read-only: every Supabase request is a GET, no RPC, and no write anywhere', async () => {
+  const { code, output } = await runSmoke(
+    baseEnv({ STAGING_SMOKE_RLS: '1', STAGING_SUPABASE_URL: supabaseOrigin, STAGING_SUPABASE_ANON_KEY: ANON_KEY }),
+  )
+  assert.equal(code, 0, output)
+  const supabase = requests.filter((r) => r.server === 'supabase')
+  assert.equal(supabase.length, 17, 'expected 6 quota tables + 8 member-only tables + 3 H2 tables')
+  assert.deepEqual([...new Set(supabase.map((r) => r.method))], ['GET'])
+  assert.ok(supabase.every((r) => !r.url.startsWith('/rest/v1/rpc/')), 'the RLS tier called an RPC')
+  assert.ok(supabase.every((r) => r.body === ''), 'the RLS tier sent a request body')
+  assert.equal(requests.filter((r) => WRITE_METHODS.has(r.method)).length, 0, 'base + RLS sent a write request')
+})
+
+test('RLS tier fails if anon can read rows of a member-only table (e.g. chat_messages)', async () => {
+  behavior.memberTableLeaks = true
+  const { code, output } = await runSmoke(
+    baseEnv({ STAGING_SMOKE_RLS: '1', STAGING_SUPABASE_URL: supabaseOrigin, STAGING_SUPABASE_ANON_KEY: ANON_KEY }),
+  )
+  assert.equal(code, 1)
+  assert.match(output, /anon NO ve filas de chat_messages — anon recibió 1 fila/)
+})
+
+test('static guard: the RLS section of the script contains no write method and no RPC path', () => {
+  const source = readFileSync(SCRIPT, 'utf8')
+  const start = source.indexOf('// ── Optional tier: RLS')
+  const end = source.indexOf('// ── Optional tier: ONE paid message')
+  assert.ok(start > 0 && end > start, 'RLS section markers not found')
+  const section = source.slice(start, end)
+  assert.doesNotMatch(section, /method:\s*['"`](POST|PUT|PATCH|DELETE)/i)
+  assert.doesNotMatch(section, /rpc\//)
+  assert.doesNotMatch(section, /\bbody:/)
 })

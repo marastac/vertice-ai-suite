@@ -136,28 +136,57 @@ const period = (organizationId) =>
 async function main() {
   await setup()
 
+  // Under heavy contention or CPU load a waiter can exceed the RPCs'
+  // lock_timeout (2 s) — the DESIGNED fail-closed outcome: the call errors with
+  // 55P03, records nothing, and quota-service retries it once with the same id.
+  // So "lock timeout" is accepted below; ANY other error still fails, and the
+  // money invariants are checked whatever the timing.
+  // Reservations actually allowed in C1/C2 — what C6 later expects to expire.
+  let c1Allowed = 0
+  let c2Allowed = 0
+  const toAnswer = (r) => (r.ok ? lastJson(r.out) : { error: r.err.split('\n')[0] })
+  const isLockTimeout = (a) => Boolean(a.error) && /lock timeout/i.test(a.error)
+  const otherErrors = (answers) => answers.filter((a) => a.error && !isLockTimeout(a)).map((a) => a.error)
+
   // C1 — budget race: room for exactly 5 reservations, 20 arrive at once.
   {
-    const answers = (await simultaneously(Array.from({ length: 20 }, () => reserve(org.budget)))).map((r) => (r.ok ? lastJson(r.out) : { error: r.err }))
-    const allowed = answers.filter((a) => a.allowed).length
-    const denied = answers.filter((a) => a.allowed === false)
+    const answers = (await simultaneously(Array.from({ length: 20 }, () => reserve(org.budget)))).map(toAnswer)
+    const allowed = (c1Allowed = answers.filter((a) => a.allowed).length)
+    const timeouts = answers.filter(isLockTimeout).length
     const [reserved] = await period(org.budget)
-    check('C1 carrera de presupuesto: 20 simultáneas, cabe exactamente 5', allowed === 5, `permitidas=${allowed}`)
-    check('C1 las rechazadas lo son por budget_exhausted (ningún error)', denied.length === 15 && denied.every((a) => a.reason === 'budget_exhausted'), `rechazadas=${denied.length}, errores=${answers.filter((a) => a.error).length}`)
-    check('C1 el reservado nunca supera el presupuesto', reserved === 5 * RESERVATION_MICROS, `reserved_micros=${reserved} (presupuesto ${5 * RESERVATION_MICROS})`)
+    check(
+      'C1 carrera de presupuesto: 20 simultáneas, cabe exactamente 5',
+      timeouts === 0 ? allowed === 5 : allowed <= 5 && allowed + timeouts >= 5,
+      `permitidas=${allowed}, lock_timeout=${timeouts}`,
+    )
+    check(
+      'C1 las demás son budget_exhausted o lock_timeout (ningún otro error)',
+      otherErrors(answers).length === 0 && answers.filter((a) => a.allowed === false).every((a) => a.reason === 'budget_exhausted'),
+      otherErrors(answers)[0] ?? `rechazadas=${answers.filter((a) => a.allowed === false).length}`,
+    )
+    check(
+      'C1 el reservado nunca supera el presupuesto y cuadra con lo permitido',
+      reserved <= 5 * RESERVATION_MICROS && reserved === allowed * RESERVATION_MICROS,
+      `reserved_micros=${reserved} (presupuesto ${5 * RESERVATION_MICROS})`,
+    )
   }
 
   // C2 — conversation-limit race: limit 3, 12 new conversations at once.
   {
-    const answers = (await simultaneously(Array.from({ length: 12 }, () => reserve(org.conversations)))).map((r) => (r.ok ? lastJson(r.out) : { error: r.err }))
-    const allowed = answers.filter((a) => a.allowed).length
+    const answers = (await simultaneously(Array.from({ length: 12 }, () => reserve(org.conversations)))).map(toAnswer)
+    const allowed = (c2Allowed = answers.filter((a) => a.allowed).length)
+    const timeouts = answers.filter(isLockTimeout).length
     const [, , conversations] = await period(org.conversations)
-    check('C2 carrera de conversaciones: límite 3, 12 simultáneas → 3 permitidas', allowed === 3, `permitidas=${allowed}`)
-    check('C2 conversations_used queda exactamente en el límite', conversations === 3, `conversations_used=${conversations}`)
     check(
-      'C2 las rechazadas lo son por conversation_limit_reached',
-      answers.filter((a) => !a.allowed).every((a) => a.reason === 'conversation_limit_reached'),
-      [...new Set(answers.filter((a) => !a.allowed).map((a) => a.reason ?? a.error))].join(','),
+      'C2 carrera de conversaciones: límite 3, 12 simultáneas → 3 permitidas',
+      timeouts === 0 ? allowed === 3 : allowed <= 3 && allowed + timeouts >= 3,
+      `permitidas=${allowed}, lock_timeout=${timeouts}`,
+    )
+    check('C2 conversations_used nunca supera el límite y cuadra', conversations <= 3 && conversations === allowed, `conversations_used=${conversations}`)
+    check(
+      'C2 las demás son conversation_limit_reached o lock_timeout',
+      otherErrors(answers).length === 0 && answers.filter((a) => a.allowed === false).every((a) => a.reason === 'conversation_limit_reached'),
+      otherErrors(answers)[0] ?? '',
     )
   }
 
@@ -166,14 +195,23 @@ async function main() {
   {
     const requestId = randomUUID()
     const sessionId = randomUUID()
-    const answers = (await simultaneously(Array.from({ length: 8 }, () => reserve(org.replay, requestId, sessionId)))).map((r) => (r.ok ? lastJson(r.out) : { error: r.err }))
-    const ids = new Set(answers.map((a) => a.reservation_id))
+    const answers = (await simultaneously(Array.from({ length: 8 }, () => reserve(org.replay, requestId, sessionId)))).map(toAnswer)
+    const answered = answers.filter((a) => !a.error)
+    const ids = new Set(answered.map((a) => a.reservation_id))
     const rows = Number(await sql(`select count(*) from public.usage_reservations where request_id = '${requestId}'`))
     const [reserved, , conversations] = await period(org.replay)
     replayReservationId = [...ids][0]
     check('C3 mismo request_id ×8 simultáneo: una sola fila de reserva', rows === 1, `filas=${rows}`)
-    check('C3 todas permitidas y con el mismo reservation_id', answers.every((a) => a.allowed) && ids.size === 1, `ids distintos=${ids.size}`)
-    check('C3 7 respuestas marcadas como replay', answers.filter((a) => a.replayed).length === 7, `replayed=${answers.filter((a) => a.replayed).length}`)
+    check(
+      'C3 todas las respondidas permitidas, con el mismo reservation_id (sin otros errores)',
+      answered.length > 0 && answered.every((a) => a.allowed) && ids.size === 1 && otherErrors(answers).length === 0,
+      otherErrors(answers)[0] ?? `ids distintos=${ids.size}, lock_timeout=${answers.filter(isLockTimeout).length}`,
+    )
+    check(
+      'C3 solo una respuesta crea la reserva; las demás son replay',
+      answered.filter((a) => !a.replayed).length === 1,
+      `nuevas=${answered.filter((a) => !a.replayed).length}`,
+    )
     check('C3 se cobra una sola vez (reservado y conversaciones)', reserved === RESERVATION_MICROS && conversations === 1, `reserved=${reserved}, conversaciones=${conversations}`)
   }
 
@@ -181,48 +219,72 @@ async function main() {
   {
     const answers = (
       await simultaneously(Array.from({ length: 8 }, () => `select public.settle_chat_usage('${replayReservationId}', 5, 5, '${MODEL}')::text;`))
-    ).map((r) => (r.ok ? lastJson(r.out) : { error: r.err }))
+    ).map(toAnswer)
+    const answered = answers.filter((a) => !a.error)
     const [reserved, settled] = await period(org.replay)
-    check('C4 liquidación ×8 simultánea: sin errores', answers.every((a) => !a.error), answers.find((a) => a.error)?.error ?? '')
-    check('C4 aplicada una sola vez (7 replays)', answers.filter((a) => a.replayed).length === 7, `replayed=${answers.filter((a) => a.replayed).length}`)
+    check('C4 liquidación ×8 simultánea: sin errores salvo lock_timeout', otherErrors(answers).length === 0, otherErrors(answers)[0] ?? '')
+    check('C4 aplicada una sola vez (el resto, replay)', answered.filter((a) => !a.replayed).length === 1, `aplicadas=${answered.filter((a) => !a.replayed).length}`)
     check('C4 importes finales: reservado 0, liquidado 5·1+5·2=15', reserved === 0 && settled === 15, `reserved=${reserved}, settled=${settled}`)
   }
 
+  // Holds the row lock of an organization's quota until released — independent
+  // of how slow `docker exec` is on this machine: the holder is only
+  // considered active once Postgres itself shows it sleeping.
+  async function holdQuotaLock(organizationId) {
+    const tag = `qc_hold_${randomUUID().slice(0, 8)}`
+    const done = psql(`begin; select 1 from public.organization_quotas where organization_id = '${organizationId}' for update; select pg_sleep(60) as ${tag}; commit;`)
+    for (let i = 0; i < 120; i++) {
+      const pid = await sql(`select coalesce(max(pid)::text, '') from pg_stat_activity where state = 'active' and query like '%as ${tag}%' and query not like '%pg_stat_activity%'`)
+      if (pid) {
+        return async () => {
+          await sql(`select pg_terminate_backend(${pid})`)
+          await done
+        }
+      }
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    throw new Error('el bloqueador no llegó a activarse')
+  }
+  // Database-side duration of one call, so docker exec latency never counts.
+  const timed = (call) => `select json_build_object('ms', extract(epoch from x.t1 - x.t0) * 1000, 'r', x.r)::text from (select clock_timestamp() as t0, (${call}) as r, clock_timestamp() as t1) x;`
+
   // C5 — row lock: another organization never waits; the same one times out cleanly.
   {
-    const holder = psql(`begin; select 1 from public.organization_quotas where organization_id = '${org.budget}' for update; select pg_sleep(7); commit;`)
-    await new Promise((r) => setTimeout(r, 2500))
-    const other = await psql(reserve(org.other))
+    const release = await holdQuotaLock(org.budget)
+    const other = await psql(timed(`public.reserve_chat_usage('${randomUUID()}', '${org.other}', '${randomUUID()}', '${MODEL}', 10, 10)`))
     const lockedRequest = randomUUID()
-    const same = await psql(reserve(org.budget, lockedRequest))
+    const same = await psql(timed(`public.reserve_chat_usage('${lockedRequest}', '${org.budget}', '${randomUUID()}', '${MODEL}', 10, 10)`))
     const leftover = Number(await sql(`select count(*) from public.usage_reservations where request_id = '${lockedRequest}'`))
-    await holder
-    check('C5 otra organización responde sin esperar al bloqueo', other.ok && lastJson(other.out).allowed && other.ms < 4000, `${other.ms} ms (incluye ~1 s de docker exec)`)
+    await release()
+    const otherJson = other.ok ? lastJson(other.out) : {}
+    check('C5 otra organización no espera al bloqueo', other.ok && otherJson.r?.allowed && otherJson.ms < 1000, other.ok ? `${Math.round(otherJson.ms)} ms en la base de datos` : other.err.split('\n')[0])
     check('C5 la organización bloqueada falla por lock_timeout (55P03)', !same.ok && /lock timeout/i.test(same.err), same.ok ? 'respondió sin error' : same.err.split('\n')[0])
     check('C5 el intento bloqueado no deja ninguna reserva', leftover === 0, `filas=${leftover}`)
   }
 
   // C6 — reconciliation skips a busy organization (SKIP LOCKED) and never waits.
   {
-    await sql(`update public.usage_reservations set created_at = created_at - interval '20 minutes'
-               where status = 'reserved' and organization_id in ('${org.budget}', '${org.conversations}')`)
-    const holder = psql(`begin; select 1 from public.organization_quotas where organization_id = '${org.budget}' for update; select pg_sleep(6); commit;`)
-    await new Promise((r) => setTimeout(r, 2500))
-    const first = await psql(`select public.expire_stale_chat_reservations()::text;`)
+    await sql(`update public.usage_reservations set created_at = created_at - interval '20 minutes' where status = 'reserved' and organization_id in ('${org.budget}', '${org.conversations}')`)
+    const release = await holdQuotaLock(org.budget)
+    const first = await psql(timed('public.expire_stale_chat_reservations()'))
     const firstJson = first.ok ? lastJson(first.out) : {}
     const budgetStillReserved = Number(await sql(`select count(*) from public.usage_reservations where organization_id = '${org.budget}' and status = 'reserved'`))
     const conversationsExpired = Number(
       await sql(`select count(*) from public.usage_reservations where organization_id = '${org.conversations}' and settlement_basis = 'expired'`),
     )
-    await holder
+    await release()
     const second = await psql(`select public.expire_stale_chat_reservations()::text;`)
     const [reservedAfter, settledAfter] = await period(org.budget)
-    check('C6 la conciliación no espera a la organización ocupada', first.ok && first.ms < 4000, `${first.ms} ms`)
-    check('C6 la salta (skipped_locked ≥ 1) y no toca sus reservas', firstJson.organizations_skipped_locked >= 1 && budgetStillReserved === 5, `skipped=${firstJson.organizations_skipped_locked}, siguen reservadas=${budgetStillReserved}`)
-    check('C6 expira las de la otra organización', conversationsExpired === 3, `expiradas=${conversationsExpired}`)
+    check('C6 la conciliación no espera a la organización ocupada', first.ok && firstJson.ms < 1000, first.ok ? `${Math.round(firstJson.ms)} ms en la base de datos` : first.err.split('\n')[0])
+    check(
+      'C6 la salta (skipped_locked ≥ 1) y no toca sus reservas',
+      firstJson.r?.organizations_skipped_locked >= 1 && budgetStillReserved === c1Allowed,
+      `skipped=${firstJson.r?.organizations_skipped_locked}, siguen reservadas=${budgetStillReserved}`,
+    )
+    check('C6 expira las de la otra organización', conversationsExpired === c2Allowed, `expiradas=${conversationsExpired}`)
     check(
       'C6 al liberarse, expira las restantes a su estimación completa (nunca gratis)',
-      second.ok && reservedAfter === 0 && settledAfter === 5 * RESERVATION_MICROS,
+      second.ok && reservedAfter === 0 && settledAfter === c1Allowed * RESERVATION_MICROS,
       `reserved=${reservedAfter}, settled=${settledAfter}`,
     )
   }

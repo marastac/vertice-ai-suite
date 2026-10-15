@@ -4,10 +4,13 @@ import {
   ChatSessionError,
   isRetryableSessionStatus,
 } from './chat-session-errors'
-import type { ChatConfiguration, ChatQualificationResult } from './types'
+import { readChatEventStream } from './chat-event-stream'
+import type { StreamChatMessageHandlers } from './chat-event-stream'
+import type { ChatConfiguration } from './types'
 
 // Re-exported so existing `import { ChatSessionError } from '@/entities/chat'` keeps working.
 export { ChatSessionError }
+export type { StreamChatMessageHandlers }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8787'
 
@@ -72,26 +75,11 @@ export async function createRemoteChatSession(orgSlug: string, config: ChatConfi
   return response.json()
 }
 
-export interface StreamChatMessageHandlers {
-  onDelta: (text: string) => void
-  onQualification: (qualification: ChatQualificationResult | null) => void
-  onDone: () => void
-  onError: (message: string) => void
-  /**
-   * Fired instead of `onDelta`/`onQualification` when the backend's
-   * technical message-count protection has been reached (see
-   * server/src/services/chat-service.ts::hasReachedMessageLimit()) — this
-   * is a normal, expected end to the conversation, not an error. `message`
-   * is a ready-to-display, calm closing message; render it like a regular
-   * assistant reply, never like `onError`'s retryable failure banner.
-   */
-  onLimitReached: (message: string) => void
-}
-
 /**
- * Hand-rolled SSE reader: the browser's native EventSource can't send a POST
- * body, so we parse the `event:`/`data:` framing ourselves off the fetch
- * response stream.
+ * Sends one chat message and streams the reply. The SSE parsing itself lives
+ * in chat-event-stream.ts::readChatEventStream(), which never throws and
+ * always reports how the reply ended (done, error, limit reached, or an
+ * interrupted stream) — except after an intentional abort.
  */
 export async function streamChatMessage(
   sessionId: string,
@@ -108,7 +96,7 @@ export async function streamChatMessage(
       signal,
     })
   } catch {
-    handlers.onError('No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.')
+    if (!signal.aborted) handlers.onError('No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.')
     return
   }
 
@@ -117,32 +105,5 @@ export async function streamChatMessage(
     return
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    const rawEvents = buffer.split('\n\n')
-    buffer = rawEvents.pop() ?? ''
-
-    for (const rawEvent of rawEvents) {
-      const lines = rawEvent.split('\n')
-      const eventLine = lines.find((line) => line.startsWith('event: '))
-      const dataLine = lines.find((line) => line.startsWith('data: '))
-      if (!eventLine || !dataLine) continue
-
-      const eventType = eventLine.slice('event: '.length).trim()
-      const data = JSON.parse(dataLine.slice('data: '.length)) as Record<string, unknown>
-
-      if (eventType === 'delta' && typeof data.text === 'string') handlers.onDelta(data.text)
-      else if (eventType === 'qualification') handlers.onQualification((data.qualification as ChatQualificationResult) ?? null)
-      else if (eventType === 'error' && typeof data.message === 'string') handlers.onError(data.message)
-      else if (eventType === 'conversation_limit_reached' && typeof data.message === 'string') handlers.onLimitReached(data.message)
-      else if (eventType === 'done') handlers.onDone()
-    }
-  }
+  await readChatEventStream(response.body, handlers, signal)
 }

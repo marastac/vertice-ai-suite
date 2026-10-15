@@ -69,6 +69,11 @@ export function PublicChatPage() {
   const [conversationEnded, setConversationEnded] = useState(false)
 
   const hasCreatedSessionRef = useRef(false)
+  // The display-mirror session (chat_sessions) must exist before a lead can
+  // be linked to it: upsert_chat_lead() refuses a session id it doesn't know
+  // for this organization (supabase/migrations-chat-lead-isolation.sql). If
+  // creating it failed at startup, it's retried right before the lead sync.
+  const pendingMirrorRef = useRef<Parameters<typeof activeChatSessionRepository.create>[0] | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -84,13 +89,24 @@ export function PublicChatPage() {
 
     try {
       const result = await createRemoteChatSession(orgSlug, config)
-      await activeChatSessionRepository.create({
+      const mirrorSession = {
         id: result.sessionId,
         organizationId,
         orgSlug,
         assistantName: result.assistantName,
         welcomeMessage: result.welcomeMessage,
-      })
+      }
+      try {
+        await activeChatSessionRepository.create(mirrorSession)
+        pendingMirrorRef.current = null
+      } catch (mirrorError) {
+        pendingMirrorRef.current = mirrorSession
+        // The backend session already exists and is what answers the
+        // visitor; failing to create its display copy (/conversations) must
+        // not turn into "could not start the conversation" — retrying would
+        // only open yet another backend session.
+        console.warn('No se pudo registrar la conversación en el historial.', mirrorError)
+      }
       setSessionId(result.sessionId)
       setMessages([
         { id: crypto.randomUUID(), role: 'assistant', content: result.welcomeMessage, createdAt: new Date().toISOString() },
@@ -123,19 +139,52 @@ export function PublicChatPage() {
 
   async function handleQualification(currentSessionId: string, qualification: ChatQualificationResult | null) {
     if (!qualification || !organizationId) return
-    await activeChatSessionRepository.setQualification(currentSessionId, qualification)
-    await syncLeadFromQualification(organizationId, currentSessionId, qualification)
+    try {
+      if (pendingMirrorRef.current) {
+        try {
+          await activeChatSessionRepository.create(pendingMirrorRef.current)
+        } catch (mirrorError) {
+          // 23505 = it already exists (the first attempt did commit but its
+          // response was lost) — exactly the state we wanted.
+          if ((mirrorError as { code?: string } | null)?.code !== '23505') throw mirrorError
+        }
+        pendingMirrorRef.current = null
+      }
+      await activeChatSessionRepository.setQualification(currentSessionId, qualification)
+      await syncLeadFromQualification(organizationId, currentSessionId, qualification)
+    } catch (error) {
+      // Never surfaced to the visitor (their conversation is fine). The next
+      // message's qualification event re-runs this same idempotent sync.
+      console.warn('No se pudo guardar la calificación del chat; se reintentará con el próximo mensaje.', error)
+    }
   }
 
-  async function sendMessage(text: string) {
+  /**
+   * Best-effort write to the display mirror (/conversations). The real
+   * conversation lives in the backend; a failure here (e.g. Supabase briefly
+   * unreachable) must never block or break the chat for the visitor.
+   */
+  async function mirrorMessage(currentSessionId: string, message: ChatMessage) {
+    try {
+      await activeChatSessionRepository.appendMessage(currentSessionId, message)
+    } catch (error) {
+      console.warn('No se pudo guardar el mensaje en el historial de conversaciones.', error)
+    }
+  }
+
+  async function sendMessage(text: string, options: { isRetry?: boolean } = {}) {
     if (!sessionId || isStreaming || conversationEnded) return
 
     setSendError(null)
     setLastUserMessage(text)
 
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: text, createdAt: new Date().toISOString() }
-    setMessages((prev) => [...prev, userMessage])
-    await activeChatSessionRepository.appendMessage(sessionId, userMessage)
+    // A retry re-sends the message whose reply failed: its bubble (and its
+    // mirror copy) already exist, so they aren't added a second time.
+    if (!options.isRetry) {
+      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: text, createdAt: new Date().toISOString() }
+      setMessages((prev) => [...prev, userMessage])
+      await mirrorMessage(sessionId, userMessage)
+    }
 
     const assistantMessageId = crypto.randomUUID()
     setMessages((prev) => [
@@ -148,39 +197,47 @@ export function PublicChatPage() {
     abortControllerRef.current = controller
     let assistantText = ''
 
-    await streamChatMessage(
-      sessionId,
-      text,
-      {
-        onDelta: (delta) => {
-          assistantText += delta
-          setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, content: assistantText } : m)))
+    // streamChatMessage never throws (see chat-event-stream.ts); the
+    // try/finally is a last line of defence so the composer can never stay
+    // disabled forever.
+    try {
+      await streamChatMessage(
+        sessionId,
+        text,
+        {
+          onDelta: (delta) => {
+            assistantText += delta
+            setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, content: assistantText } : m)))
+          },
+          onQualification: (qualification) => {
+            void handleQualification(sessionId, qualification)
+          },
+          onError: (message) => setSendError(message),
+          onLimitReached: (message) => {
+            // Rendered as a normal assistant bubble (reusing the placeholder
+            // already created above for this turn), never as the red,
+            // retryable onError banner — this is an expected conversation
+            // end, not a failure. Setting assistantText here (not just the
+            // local state) means the existing post-stream logic below
+            // persists it to the display mirror exactly like any other
+            // assistant reply, with no special-casing needed there.
+            assistantText = message
+            setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, content: message } : m)))
+            setConversationEnded(true)
+          },
+          onDone: () => {},
         },
-        onQualification: (qualification) => {
-          void handleQualification(sessionId, qualification)
-        },
-        onError: (message) => setSendError(message),
-        onLimitReached: (message) => {
-          // Rendered as a normal assistant bubble (reusing the placeholder
-          // already created above for this turn), never as the red,
-          // retryable onError banner — this is an expected conversation
-          // end, not a failure. Setting assistantText here (not just the
-          // local state) means the existing post-stream logic below
-          // persists it to the display mirror exactly like any other
-          // assistant reply, with no special-casing needed there.
-          assistantText = message
-          setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, content: message } : m)))
-          setConversationEnded(true)
-        },
-        onDone: () => {},
-      },
-      controller.signal,
-    )
-
-    setIsStreaming(false)
+        controller.signal,
+      )
+    } catch (error) {
+      console.warn('El envío del mensaje falló de forma inesperada.', error)
+      setSendError('No se pudo enviar el mensaje. Inténtalo de nuevo.')
+    } finally {
+      setIsStreaming(false)
+    }
 
     if (assistantText.trim()) {
-      await activeChatSessionRepository.appendMessage(sessionId, {
+      await mirrorMessage(sessionId, {
         id: assistantMessageId,
         role: 'assistant',
         content: assistantText,
@@ -197,7 +254,7 @@ export function PublicChatPage() {
   }
 
   function handleRetrySend() {
-    if (lastUserMessage) void sendMessage(lastUserMessage)
+    if (lastUserMessage) void sendMessage(lastUserMessage, { isRetry: true })
   }
 
   if (isLoading) {
